@@ -56,6 +56,7 @@ package = true
 [tool.setuptools]
 package-dir = { "" = "src" }
 packages = [
+    "perception",
     "nn",
     "nn.hrnet",
     "nn.hrnet.custom",

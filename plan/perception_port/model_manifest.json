@@ -1,0 +1,101 @@
+{
+  "repository": "hkustenterprize/RM26_engineer_exchange_model",
+  "revision": "afab41a8b61c399bf71480f0fd52352ed660b994",
+  "source_code_commit": "cb5ef2f3",
+  "models": {
+    "yolo": "YOLO26-s-v10.12",
+    "hrnet": "LiteHRNet-30-v9.1"
+  },
+  "verified_at_utc": "2026-10-07T06:37:39.332584+00:00",
+  "local_root": "models/perception",
+  "verification": "size plus upstream Git blob SHA-1 or LFS SHA-256; local SHA-256 for all files",
+  "files": [
+    {
+      "path": "yolo/v10.12/openvino_best/best.bin",
+      "size": 18982704,
+      "sha256": "443af62aa9c7cb80605bd4ed6ba8f2d9323ad542b66ebd928be08705ed64a884",
+      "remote_git_blob": "5e08ce2eb1ddf62a39445e353663130a73f267fe",
+      "remote_lfs_sha256": "443af62aa9c7cb80605bd4ed6ba8f2d9323ad542b66ebd928be08705ed64a884",
+      "url": "https://huggingface.co/hkustenterprize/RM26_engineer_exchange_model/resolve/afab41a8b61c399bf71480f0fd52352ed660b994/yolo/v10.12/openvino_best/best.bin"
+    },
+    {
+      "path": "yolo/v10.12/openvino_best/best.xml",
+      "size": 498904,
+      "sha256": "a40c11b2e3d1482b924ef388bac39fa81dd0f0707aed5b02f44750e3bc8ab308",
+      "remote_git_blob": "a4291a258e437c257cd650375335f21e561667eb",
+      "remote_lfs_sha256": null,
+      "url": "https://huggingface.co/hkustenterprize/RM26_engineer_exchange_model/resolve/afab41a8b61c399bf71480f0fd52352ed660b994/yolo/v10.12/openvino_best/best.xml"
+    },
+    {
+      "path": "yolo/v10.12/openvino_best/metadata.yaml",
+      "size": 497,
+      "sha256": "3ce51ba767a2504782d42ba407a778903d1f63385e5cec2e71b9b621e25446cd",
+      "remote_git_blob": "214206273451939e6a3e88dba29914c8c44af54e",
+      "remote_lfs_sha256": null,
+      "url": "https://huggingface.co/hkustenterprize/RM26_engineer_exchange_model/resolve/afab41a8b61c399bf71480f0fd52352ed660b994/yolo/v10.12/openvino_best/metadata.yaml"
+    },
+    {
+      "path": "litehr/litehrnet30_v9.1/openvino_best/hrnet_heatmap.bin",
+      "size": 3808392,
+      "sha256": "3a1db63035c5d686acceb06d4c38562766913f526df7408ea2c2cccf62457def",
+      "remote_git_blob": "2adb10c0019ff337d16ccb4bf9a53fb5a4de064a",
+      "remote_lfs_sha256": "3a1db63035c5d686acceb06d4c38562766913f526df7408ea2c2cccf62457def",
+      "url": "https://huggingface.co/hkustenterprize/RM26_engineer_exchange_model/resolve/afab41a8b61c399bf71480f0fd52352ed660b994/litehr/litehrnet30_v9.1/openvino_best/hrnet_heatmap.bin"
+    },
+    {
+      "path": "litehr/litehrnet30_v9.1/openvino_best/hrnet_heatmap.xml",
+      "size": 3392114,
+      "sha256": "3bdba70e5d1b25e7dd71576bec95996937e506ae2804dea2651c946b9436dfcb",
+      "remote_git_blob": "71acec1f8e4300fb7ae4adccb6101ad463f794ac",
+      "remote_lfs_sha256": null,
+      "url": "https://huggingface.co/hkustenterprize/RM26_engineer_exchange_model/resolve/afab41a8b61c399bf71480f0fd52352ed660b994/litehr/litehrnet30_v9.1/openvino_best/hrnet_heatmap.xml"
+    }
+  ],
+  "openvino_version": "2025.4.1-20426-82bbf0292c5-releases/2025/4",
+  "available_devices": [
+    "CPU"
+  ],
+  "model_contracts": {
+    "yolo": {
+      "inputs": [
+        {
+          "shape": "[1,3,640,640]",
+          "type": "f32"
+        }
+      ],
+      "outputs": [
+        {
+          "shape": "[1,300,6]",
+          "type": "f32"
+        }
+      ],
+      "zero_input_cpu_output_shape": [
+        1,
+        300,
+        6
+      ],
+      "zero_input_cpu_output_finite": true
+    },
+    "hrnet": {
+      "inputs": [
+        {
+          "shape": "[?,3,256,256]",
+          "type": "f32"
+        }
+      ],
+      "outputs": [
+        {
+          "shape": "[?,12,128,128]",
+          "type": "f32"
+        }
+      ],
+      "zero_input_cpu_output_shape": [
+        1,
+        12,
+        128,
+        128
+      ],
+      "zero_input_cpu_output_finite": true
+    }
+  }
+}

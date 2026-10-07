@@ -1,0 +1,231 @@
+render:
+  engine: CYCLES
+  device: CPU
+  width: 640
+  height: 480
+  samples: 8
+  use_denoising: true
+  sensor_width_mm: 36.0
+camera:
+  position:
+  - 0.0
+  - -0.8
+  - 0.05
+  look_at:
+  - 0.0
+  - 0.205
+  - 0.012
+  fov_h_deg: 60.0
+object_transform:
+  pivot:
+  - 0.0
+  - 0.205
+  - 0.012
+  yaw_range:
+  - -12.0
+  - 12.0
+  pitch_range:
+  - 80.0
+  - 100.0
+  roll_range:
+  - -8.0
+  - 8.0
+  distance_range:
+  - 0.75
+  - 0.9
+  offset_x_range:
+  - -0.02
+  - 0.02
+  offset_y_range:
+  - -0.02
+  - 0.02
+  max_retries: 50
+  framing_margin: 20
+  pillar_slide:
+    objects:
+    - pillar_*
+    target: pillar
+    skip_prob: 0.8
+    y_range:
+    - 0.0
+    - 0.1
+lighting:
+  light_type: blue
+  light_type_choices:
+  - red
+  - blue
+  strips_strength: 30.0
+  ambient_strength: 0.5
+  ambient_color:
+  - 1.0
+  - 1.0
+  - 1.0
+  sun_energy: 0.0
+  strip_lights:
+    color: blue
+    color_choices:
+    - red
+    - blue
+    strength_range:
+    - 20.0
+    - 40.0
+    on_prob: 1.0
+    objects:
+    - back_main_light_1
+    - back_main_light_2
+  arc_lights:
+    objects:
+    - back_light_bar_1
+    - back_light_bar_2
+    - back_light_bar_3
+    - back_light_bar_4
+    - back_light_bar_5
+    - back_light_bar_6
+    - back_light_bar_7
+    - back_light_bar_8
+    - back_light_bar_9
+    - back_light_bar_10
+    - back_light_bar_11
+    - back_light_bar_12
+    - back_light_bar_13
+    - back_light_bar_14
+    - back_light_bar_15
+    - back_light_bar_16
+    - back_light_bar_17
+    - back_light_bar_18
+    - back_light_bar_19
+    - back_light_bar_20
+    - back_light_bar_21
+    - back_light_bar_22
+    - back_light_bar_23
+    - back_light_bar_24
+    - back_light_bar_25
+    - back_light_bar_26
+    - back_light_bar_27
+    - back_light_bar_28
+    - back_light_bar_29
+    - back_light_bar_30
+    - back_light_bar_31
+    - back_light_bar_32
+    - back_light_bar_33
+    - back_light_bar_34
+    - back_light_bar_35
+    - back_light_bar_36
+    strength: 20.0
+    false: false
+    blink: true
+    on_prob: 0.8
+    per_object: true
+    min_on_count: 5
+    max_on_count: 35
+    color: random
+    color_choices:
+    - red
+    - blue
+    base_material: light_bar_red
+    off_material: light_bar_off
+    emission_node: 自发光
+  aux_lights:
+    count_range:
+    - 1
+    - 3
+    dist: 5.0
+    energy_range:
+    - 10.0
+    - 1000.0
+  glare:
+    glare_type: FOG_GLOW
+    threshold: 0.0
+    size_range:
+    - 2
+    - 6
+    mix: 0.5
+targets:
+- name: pillar
+  pass_index: 1
+  mesh_objects:
+    include:
+    - pillar_*
+    exclude:
+    - pillar_slide
+  keypoints:
+    TL:
+    - -0.04
+    - 0.04
+    - 0.012
+    TR:
+    - 0.04
+    - 0.04
+    - 0.012
+    BL:
+    - -0.04
+    - -0.04
+    - 0.012
+    BR:
+    - 0.04
+    - -0.04
+    - 0.012
+    ring:
+    - 0.0
+    - 0.0
+    - 0.112
+  min_visible: 2
+- name: exchange
+  pass_index: 2
+  mesh_objects:
+    include:
+    - '*'
+  bbox_from_targets:
+  - pillar
+  - exchange
+  keypoints:
+    light_BR:
+    - 0.11487
+    - 0.035953
+    - 0.0
+    light_TR:
+    - 0.11487
+    - 0.167312
+    - 0.0
+    shell_R:
+    - 0.084871
+    - 0.276449
+    - 0.0
+    shell_M:
+    - 0.0
+    - 0.325449
+    - 0.0
+    shell_L:
+    - -0.084871
+    - 0.276449
+    - 0.0
+    light_TL:
+    - -0.11487
+    - 0.167312
+    - 0.0
+    light_BL:
+    - -0.11487
+    - 0.035953
+    - 0.0
+  min_visible: 4
+scene:
+  sun_object: 日光
+  emission_node: 自发光
+  light_objects:
+  - pillar_L_light_1
+  - pillar_L_light_2
+  - pillar_L_light_3
+  - pillar_L_light_4
+  - pillar_L_light_5
+  - pillar_L_light_6
+  - pillar_side_light_1
+  - pillar_side_light_2
+  - pillar_side_light_3
+  material_map:
+    blue: light_bar_blue
+    red: light_bar_red
+    'off': light_bar_off
+occlusion_offset_m: 0.001
+min_visible:
+  pillar: 3
+  exchange: 4

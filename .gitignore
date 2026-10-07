@@ -248,6 +248,7 @@ __marimo__/
 /tmp/
 /jobs/
 /data/
+/models/
 /outputs/
 /checkpoints/
 
