@@ -1,10 +1,31 @@
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import random
 from pathlib import Path
+from collections.abc import Sequence
+from typing import TypeAlias, TypedDict, cast
 
 import cv2
+import numpy as np
+from numpy.typing import NDArray
+
+from nn.hrnet.data.schema import CocoAnnotation, CocoDataset, CocoImage
+
+ImageArray: TypeAlias = NDArray[np.uint8]
+Color: TypeAlias = tuple[int, int, int]
+YoloLabel: TypeAlias = tuple[int, list[float], list[tuple[float, float]], list[int]]
+
+
+class DatasetYaml(TypedDict, total=False):
+    path: str
+    train: str
+    val: str
+    test: str
+    kpt_shape: list[int]
+    kpt_names: dict[int | str, str] | list[str]
 
 
 
@@ -45,19 +66,21 @@ FULL_SKELETON = SKELETON + [(5, 6), (10, 11), (11, 5), (6, 7), (7, 8), (8, 9), (
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
-def load_coco(json_path):
+def load_coco(
+    json_path: str | Path,
+) -> tuple[CocoDataset, dict[int, CocoImage], dict[int, list[CocoAnnotation]]]:
     with open(json_path, "r") as f:
-        coco = json.load(f)
+        coco = cast(CocoDataset, json.load(f))
 
     images = {img["id"]: img for img in coco["images"]}
-    anns_by_img = {}
+    anns_by_img: dict[int, list[CocoAnnotation]] = {}
     for ann in coco["annotations"]:
         anns_by_img.setdefault(ann["image_id"], []).append(ann)
 
     return coco, images, anns_by_img
 
 
-def shorten_kpt_label(name):
+def shorten_kpt_label(name: str) -> str:
     label = str(name).strip()
     lower = label.lower()
     if lower == "ring":
@@ -69,7 +92,10 @@ def shorten_kpt_label(name):
     return label.upper()
 
 
-def draw_outlined_text(canvas, text, org, color, font_scale=0.85, thickness=2):
+def draw_outlined_text(
+    canvas: ImageArray, text: str, org: tuple[int, int], color: Color,
+    font_scale: float = 0.85, thickness: int = 2,
+) -> None:
     cv2.putText(
         canvas,
         text,
@@ -93,15 +119,15 @@ def draw_outlined_text(canvas, text, org, color, font_scale=0.85, thickness=2):
 
 
 def draw_inference_style_overlay(
-    img,
-    bbox_xyxy,
-    keypoints_xy,
-    visible=None,
-    keypoint_names=None,
-    skeleton=None,
-    keypoint_colors=None,
-    show_labels=True,
-):
+    img: ImageArray,
+    bbox_xyxy: Sequence[float],
+    keypoints_xy: Sequence[tuple[float, float]],
+    visible: Sequence[int] | None = None,
+    keypoint_names: Sequence[str] | None = None,
+    skeleton: Sequence[tuple[int, int]] | None = None,
+    keypoint_colors: Sequence[Color] | None = None,
+    show_labels: bool = True,
+) -> ImageArray:
     out = img.copy()
     keypoint_names = keypoint_names or KPT_NAMES
     skeleton = skeleton or SKELETON
@@ -135,8 +161,9 @@ def draw_inference_style_overlay(
     return out
 
 
-def draw_annotation(img, ann, show_labels=True):
-    out = img.copy()
+def draw_annotation(
+    img: ImageArray, ann: CocoAnnotation, show_labels: bool = True,
+) -> ImageArray:
 
     x, y, w, h = ann["bbox"]
     kpts = ann["keypoints"]
@@ -147,7 +174,7 @@ def draw_annotation(img, ann, show_labels=True):
     pts = [(float(kpts[i * 3]), float(kpts[i * 3 + 1])) for i in range(n_kpts)]
     visible = [int(kpts[i * 3 + 2]) for i in range(n_kpts)]
     return draw_inference_style_overlay(
-        out,
+        img,
         bbox_xyxy=[x, y, x + w, y + h],
         keypoints_xy=pts,
         visible=visible,
@@ -157,16 +184,16 @@ def draw_annotation(img, ann, show_labels=True):
     )
 
 
-def load_dataset_yaml(yaml_path):
+def load_dataset_yaml(yaml_path: str | Path) -> tuple[DatasetYaml, Path]:
     import yaml
 
     with open(yaml_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
+        cfg = cast(DatasetYaml, yaml.safe_load(f) or {})
     root = Path(cfg.get("path") or Path(yaml_path).parent).expanduser()
     return cfg, root
 
 
-def normalize_mapping(mapping):
+def normalize_mapping(mapping: dict[int | str, str] | list[str] | None) -> dict[int, str]:
     if isinstance(mapping, dict):
         return {int(k): str(v) for k, v in mapping.items()}
     if isinstance(mapping, list):
@@ -174,7 +201,7 @@ def normalize_mapping(mapping):
     return {}
 
 
-def find_image(image_dir, stem):
+def find_image(image_dir: str | Path, stem: str) -> Path | None:
     for ext in IMAGE_EXTS:
         path = Path(image_dir) / f"{stem}{ext}"
         if path.exists():
@@ -182,7 +209,9 @@ def find_image(image_dir, stem):
     return None
 
 
-def parse_yolo_label_line(line, img_w, img_h, total_kpts):
+def parse_yolo_label_line(
+    line: str, img_w: int, img_h: int, total_kpts: int,
+) -> YoloLabel | None:
     vals = [float(v) for v in line.strip().split()]
     if len(vals) < 5:
         return None
@@ -205,9 +234,13 @@ def parse_yolo_label_line(line, img_w, img_h, total_kpts):
     return cls_id, [x0, y0, x1, y1], keypoints, visible
 
 
-def visualize_yolo_dataset(dataset_yaml, split, out_dir, num_samples, seed, show_labels=True, class_id=None):
+def visualize_yolo_dataset(
+    dataset_yaml: str | Path, split: str, out_dir: str | Path, num_samples: int,
+    seed: int, show_labels: bool = True, class_id: int | None = None,
+) -> None:
     cfg, root = load_dataset_yaml(dataset_yaml)
-    image_dir = root / cfg.get(split, f"images/{split}")
+    split_path = cast(str, cfg.get(split, f"images/{split}"))
+    image_dir = root / split_path
     label_dir = root / "labels" / split
     kpt_shape = cfg.get("kpt_shape", [5, 3])
     total_kpts = int(kpt_shape[0])
@@ -218,8 +251,8 @@ def visualize_yolo_dataset(dataset_yaml, split, out_dir, num_samples, seed, show
     label_files = sorted(label_dir.glob("*.txt"))
     random.seed(seed)
     random.shuffle(label_files)
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(out_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     saved = 0
     for label_path in label_files:
@@ -233,7 +266,7 @@ def visualize_yolo_dataset(dataset_yaml, split, out_dir, num_samples, seed, show
             continue
 
         h, w = img.shape[:2]
-        vis = img.copy()
+        vis = cast(ImageArray, img.copy())
         drew = False
         for raw in label_path.read_text(encoding="utf-8").splitlines():
             if not raw.strip():
@@ -268,14 +301,14 @@ def visualize_yolo_dataset(dataset_yaml, split, out_dir, num_samples, seed, show
 
         if not drew:
             continue
-        save_path = out_dir / img_path.name
+        save_path = output_dir / img_path.name
         cv2.imwrite(str(save_path), vis)
         saved += 1
 
     print(f"Saved {saved} YOLO training visualizations to: {out_dir}")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Visualize COCO or YOLO pose annotations")
     parser.add_argument("data_root", help="COCO dataset root or YOLO dataset YAML")
     parser.add_argument("--ann", default="exchange12_train.json", help="annotation file under data_root")
@@ -328,7 +361,7 @@ def main():
             print(f"Warning: failed to read {img_path}")
             continue
 
-        vis = img.copy()
+        vis = cast(ImageArray, img.copy())
         anns = anns_by_img[image_id]
 
         for ann in anns:

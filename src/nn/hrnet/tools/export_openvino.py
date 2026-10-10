@@ -34,6 +34,11 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from mmengine.config import Config
+    from mmpose.models.backbones.litehrnet import CrossResolutionWeighting
 
 import torch
 import torch.nn as nn
@@ -89,19 +94,20 @@ class HeatmapForwardOnnx(nn.Module):
 
     def __init__(self, pose_estimator: nn.Module) -> None:
         super().__init__()
-        self.backbone = pose_estimator.backbone
-        self.neck = getattr(pose_estimator, "neck", None)
-        self.head = pose_estimator.head
+        self.backbone = cast(nn.Module, pose_estimator.backbone)
+        self.neck = cast(nn.Module | None, getattr(pose_estimator, "neck", None))
+        self.head = cast(nn.Module, pose_estimator.head)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         feats = self.backbone(x)
         if self.neck is not None:
             feats = self.neck(feats)
+        feat_tuple: tuple[torch.Tensor, ...]
         if isinstance(feats, torch.Tensor):
             feat_tuple = (feats,)
         else:
-            feat_tuple = feats  # type: ignore[assignment]
-        return self.head(feat_tuple)
+            feat_tuple = cast(tuple[torch.Tensor, ...], feats)
+        return cast(torch.Tensor, self.head(feat_tuple))
 
 
 def _patch_litehrnet_for_onnx() -> None:
@@ -121,7 +127,9 @@ def _patch_litehrnet_for_onnx() -> None:
     if getattr(CrossResolutionWeighting, "_onnx_export_patched", False):
         return
 
-    def forward_onnx(self, x):
+    def forward_onnx(
+        self: CrossResolutionWeighting, x: list[torch.Tensor],
+    ) -> list[torch.Tensor]:
         mini_h = int(x[-1].shape[-2])
         mini_w = int(x[-1].shape[-1])
 
@@ -138,22 +146,20 @@ def _patch_litehrnet_for_onnx() -> None:
             kernel = (h // mini_h, w // mini_w)
             pooled.append(F.avg_pool2d(s, kernel_size=kernel, stride=kernel))
 
-        out = pooled + [x[-1]]
-        out = torch.cat(out, dim=1)
-        out = self.conv1(out)
-        out = self.conv2(out)
-        out = torch.split(out, self.channels, dim=1)
-        out = [
-            s * F.interpolate(a, size=s.shape[-2:], mode="nearest")
-            for s, a in zip(x, out)
+        merged = torch.cat(pooled + [x[-1]], dim=1)
+        merged = self.conv1(merged)
+        merged = self.conv2(merged)
+        weights = torch.split(merged, self.channels, dim=1)
+        return [
+            branch * F.interpolate(weight, size=branch.shape[-2:], mode="nearest")
+            for branch, weight in zip(x, weights)
         ]
-        return out
 
     CrossResolutionWeighting.forward = forward_onnx
     CrossResolutionWeighting._onnx_export_patched = True
 
 
-def _resolve_input_hw(cfg) -> tuple[int, int]:
+def _resolve_input_hw(cfg: Config) -> tuple[int, int]:
     """Return (H, W) for model input from codec.input_size."""
     head_cfg = cfg.model["head"]
     decoder = head_cfg.get("decoder")
@@ -230,7 +236,7 @@ def main() -> int:
 
     torch.onnx.export(
         wrapped,
-        dummy,
+        (dummy,),
         str(onnx_path),
         input_names=["input"],
         output_names=["heatmaps"],

@@ -33,6 +33,8 @@ import os
 from dataclasses import dataclass
 from glob import glob
 
+from nn.hrnet.data.schema import CocoAnnotation, CocoCategory, CocoDataset, CocoImage, CocoInstance
+
 PILLAR_KPT_NAMES = ["TL", "TR", "BL", "BR", "ring"]
 EXCHANGE_KPT_NAMES = [
     "light_BR",
@@ -62,11 +64,10 @@ FULL_SKELETON = PILLAR_SKELETON + EXCHANGE_SKELETON
 def read_image_shape(path: str) -> tuple[int, int] | None:
     """Return image shape as (height, width) with minimal runtime assumptions."""
     try:
-        import cv2  # type: ignore
+        import cv2
     except ImportError:
-        cv2 = None
-
-    if cv2 is not None:
+        pass
+    else:
         img = cv2.imread(path)
         if img is not None:
             h, w = img.shape[:2]
@@ -77,8 +78,8 @@ def read_image_shape(path: str) -> tuple[int, int] | None:
     except ImportError:
         return None
 
-    with Image.open(path) as img:
-        width, height = img.size
+    with Image.open(path) as pil_image:
+        width, height = pil_image.size
     return int(height), int(width)
 
 
@@ -124,7 +125,9 @@ def find_image(image_dir: str, stem: str) -> str | None:
     return None
 
 
-def clamp_bbox_xywh(x: float, y: float, w: float, h: float, img_w: int, img_h: int):
+def clamp_bbox_xywh(
+    x: float, y: float, w: float, h: float, img_w: int, img_h: int,
+) -> tuple[float, float, float, float]:
     x = max(0.0, x)
     y = max(0.0, y)
     w = max(0.0, min(w, img_w - x))
@@ -177,7 +180,7 @@ def build_instance(
     keypoints_norm: list[tuple[float, float, int]],
     img_w: int,
     img_h: int,
-) -> dict | None:
+) -> CocoInstance | None:
     x, y, w, h = yolo_bbox_to_coco_xywh(rec, img_w, img_h)
     if w < 2 or h < 2:
         return None
@@ -203,8 +206,8 @@ def build_exchange12_instances(
     pillar_class_id: int,
     exchange_class_id: int,
     pillar_kpts: int,
-) -> tuple[list[dict], int]:
-    out = []
+) -> tuple[list[CocoInstance], int]:
+    out: list[CocoInstance] = []
     pending_pillars: list[LabelRecord] = []
     skipped_exchange = 0
 
@@ -233,7 +236,7 @@ def build_exchange12_instances(
 def export_visualization(
     img_path: str,
     out_path: str,
-    instances: list[dict],
+    instances: list[CocoInstance],
 ) -> bool:
     try:
         from PIL import Image, ImageDraw
@@ -329,11 +332,11 @@ def process_split(
     vis_dir: str | None = None,
     vis_num: int = 0,
 ) -> None:
-    images = []
-    annotations = []
+    images: list[CocoImage] = []
+    annotations: list[CocoAnnotation] = []
     skipped_pairs = 0
     vis_written = 0
-    categories = [
+    categories: list[CocoCategory] = [
         {
             "id": 1,
             "name": "exchange_with_pillar",
@@ -417,7 +420,7 @@ def process_split(
 
         img_id += 1
 
-    coco = {
+    coco: CocoDataset = {
         "images": images,
         "annotations": annotations,
         "categories": categories,

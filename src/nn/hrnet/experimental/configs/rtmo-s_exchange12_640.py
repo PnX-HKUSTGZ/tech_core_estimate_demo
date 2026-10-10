@@ -10,8 +10,8 @@ max_epochs = 120
 rtmo_switch_epoch = 56
 stage2_epoch = 100
 train_cfg = dict(max_epochs=max_epochs, val_interval=2, dynamic_intervals=[(stage2_epoch, 1)])
-val_cfg = dict()
-test_cfg = dict()
+val_cfg: dict[str, bool] = dict()
+test_cfg: dict[str, bool] = dict()
 auto_scale_lr = dict(base_batch_size=256)
 
 default_hooks = dict(

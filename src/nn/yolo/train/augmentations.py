@@ -1,15 +1,61 @@
 """Configuration-driven image and label-aware augmentations."""
 
+from __future__ import annotations
+
 import os
 import random
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, TypeAlias, TypedDict, cast, overload
 
 import numpy as np
+from numpy.typing import NDArray
 from ultralytics.data.augment import BaseTransform, Format, LetterBox
+from ultralytics.utils.instance import Instances
 
-from nn.utils import make_object_from_config
+from nn.utils import ConfigMap, ConfigValue, config_section, make_object_from_config
+
+if TYPE_CHECKING:
+    from albumentations.core.composition import BaseCompose
+    from albumentations.core.transforms_interface import BasicTransform
+    from ultralytics.data.dataset import YOLODataset
+
+ImageScalar: TypeAlias = np.uint8 | np.float32 | np.float64
+ImageArray: TypeAlias = NDArray[ImageScalar]
+FloatArray: TypeAlias = NDArray[np.float32]
+ValueRange: TypeAlias = float | Sequence[float]
 
 
-def _ordered_range(value, cast=float, lower=0):
+class AugmentationLabels(TypedDict, total=False):
+    """Fields read or changed before Ultralytics' final ``Format`` transform.
+
+    Ultralytics carries additional metadata through this dictionary unchanged.
+    Images at this point are NumPy arrays, never formatted torch tensors.
+    """
+
+    img: ImageArray
+    instances: Instances
+    cls: FloatArray | None
+    resized_shape: tuple[int, int]
+
+
+LabelTransform: TypeAlias = Callable[[AugmentationLabels], AugmentationLabels]
+
+
+@overload
+def _ordered_range(
+    value: ValueRange, cast: type[int], lower: int = 0
+) -> tuple[int, int]: ...
+
+
+@overload
+def _ordered_range(
+    value: ValueRange, cast: type[float] = float, lower: float = 0
+) -> tuple[float, float]: ...
+
+
+def _ordered_range(
+    value: ValueRange, cast: type[float] | type[int] = float, lower: float = 0
+) -> tuple[float, float]:
     if isinstance(value, (int, float)):
         value = (value, value)
     low, high = cast(value[0]), cast(value[1])
@@ -17,7 +63,14 @@ def _ordered_range(value, cast=float, lower=0):
     return max(lower, low), max(lower, high)
 
 
-def _crop_labels(labels, x1, y1, x2, y2, min_bbox_area_ratio):
+def _crop_labels(
+    labels: AugmentationLabels,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    min_bbox_area_ratio: float,
+) -> AugmentationLabels:
     """Crop an image and synchronously update its Ultralytics instances."""
     image = labels["img"]
     image_height, image_width = image.shape[:2]
@@ -67,8 +120,6 @@ def _crop_labels(labels, x1, y1, x2, y2, min_bbox_area_ratio):
     if segments is not None and len(segments) > 0:
         segments = segments[keep]
 
-    from ultralytics.utils.instance import Instances
-
     labels["instances"] = Instances(
         bboxes=clipped_boxes[keep],
         segments=segments,
@@ -76,15 +127,21 @@ def _crop_labels(labels, x1, y1, x2, y2, min_bbox_area_ratio):
         bbox_format="xyxy",
         normalized=False,
     )
-    if labels.get("cls") is not None:
-        labels["cls"] = labels["cls"][keep]
+    classes = labels.get("cls")
+    if classes is not None:
+        labels["cls"] = classes[keep]
     return labels
 
 
 class RandomCrop(BaseTransform):
     """Randomly crop an image while keeping boxes and keypoints synchronized."""
 
-    def __init__(self, scale=(0.5, 1.0), p=0.5, min_bbox_area_ratio=0.1):
+    def __init__(
+        self,
+        scale: ValueRange = (0.5, 1.0),
+        p: float = 0.5,
+        min_bbox_area_ratio: float = 0.1,
+    ) -> None:
         super().__init__()
         self.scale = _ordered_range(scale)
         if not 0 < self.scale[0] <= self.scale[1] <= 1:
@@ -92,7 +149,7 @@ class RandomCrop(BaseTransform):
         self.p = float(p)
         self.min_bbox_area_ratio = float(min_bbox_area_ratio)
 
-    def __call__(self, labels):
+    def __call__(self, labels: AugmentationLabels) -> AugmentationLabels:
         if random.random() > self.p:
             return labels
         height, width = labels["img"].shape[:2]
@@ -109,10 +166,10 @@ class RandomCrop(BaseTransform):
             self.min_bbox_area_ratio,
         )
 
-    def apply_image(self, labels):
+    def apply_image(self, labels: AugmentationLabels) -> AugmentationLabels:
         return labels
 
-    def apply_instances(self, labels):
+    def apply_instances(self, labels: AugmentationLabels) -> AugmentationLabels:
         return labels
 
 
@@ -121,13 +178,13 @@ class RandomBoxCrop(BaseTransform):
 
     def __init__(
         self,
-        p=0.2,
-        target_classes=None,
-        scale=(1.3, 3.0),
-        center_jitter=0.15,
-        min_bbox_area_ratio=0.05,
-        min_crop_size_ratio=0.25,
-    ):
+        p: float = 0.2,
+        target_classes: Sequence[int] | None = None,
+        scale: ValueRange = (1.3, 3.0),
+        center_jitter: float = 0.15,
+        min_bbox_area_ratio: float = 0.05,
+        min_crop_size_ratio: float = 0.25,
+    ) -> None:
         super().__init__()
         self.p = float(p)
         self.target_classes = (
@@ -138,7 +195,7 @@ class RandomBoxCrop(BaseTransform):
         self.min_bbox_area_ratio = float(min_bbox_area_ratio)
         self.min_crop_size_ratio = float(min_crop_size_ratio)
 
-    def __call__(self, labels):
+    def __call__(self, labels: AugmentationLabels) -> AugmentationLabels:
         if random.random() > self.p:
             return labels
         image = labels.get("img")
@@ -151,7 +208,7 @@ class RandomBoxCrop(BaseTransform):
             instances.denormalize(width, height)
         instances.convert_bbox(format="xyxy")
         boxes = instances.bboxes.copy()
-        eligible = np.arange(len(boxes))
+        eligible: NDArray[np.intp] = np.arange(len(boxes))
         classes = labels.get("cls")
         if self.target_classes is not None and classes is not None:
             class_ids = np.asarray(classes).reshape(-1).astype(int)
@@ -185,17 +242,22 @@ class RandomBoxCrop(BaseTransform):
             labels, x1, y1, x2, y2, self.min_bbox_area_ratio
         )
 
-    def apply_image(self, labels):
+    def apply_image(self, labels: AugmentationLabels) -> AugmentationLabels:
         return labels
 
-    def apply_instances(self, labels):
+    def apply_instances(self, labels: AugmentationLabels) -> AugmentationLabels:
         return labels
 
 
 class RandomChoice(BaseTransform):
     """Apply at most one transform from a weighted list."""
 
-    def __init__(self, transforms, weights=None, p=0.5):
+    def __init__(
+        self,
+        transforms: Sequence[LabelTransform],
+        weights: Sequence[float] | None = None,
+        p: float = 0.5,
+    ) -> None:
         super().__init__()
         self.transforms = list(transforms)
         self.weights = list(weights or [1.0] * len(self.transforms))
@@ -205,15 +267,15 @@ class RandomChoice(BaseTransform):
             raise ValueError("weights must be non-negative with a positive sum")
         self.p = float(p)
 
-    def __call__(self, labels):
+    def __call__(self, labels: AugmentationLabels) -> AugmentationLabels:
         if not self.transforms or random.random() > self.p:
             return labels
         return random.choices(self.transforms, weights=self.weights, k=1)[0](labels)
 
-    def apply_image(self, labels):
+    def apply_image(self, labels: AugmentationLabels) -> AugmentationLabels:
         return labels
 
-    def apply_instances(self, labels):
+    def apply_instances(self, labels: AugmentationLabels) -> AugmentationLabels:
         return labels
 
 
@@ -222,15 +284,15 @@ class RandomOcclusion(BaseTransform):
 
     def __init__(
         self,
-        p=0.2,
-        holes=(1, 2),
-        height=(0.1, 0.3),
-        width=(0.1, 0.3),
-        fill=0,
-        random_fill_p=0.0,
-        max_bbox_overlap=1.0,
-        max_attempts=20,
-    ):
+        p: float = 0.2,
+        holes: ValueRange = (1, 2),
+        height: ValueRange = (0.1, 0.3),
+        width: ValueRange = (0.1, 0.3),
+        fill: float | Sequence[float] | str = 0,
+        random_fill_p: float = 0.0,
+        max_bbox_overlap: float = 1.0,
+        max_attempts: int = 20,
+    ) -> None:
         super().__init__()
         self.p = float(p)
         self.holes = _ordered_range(holes, int)
@@ -242,24 +304,28 @@ class RandomOcclusion(BaseTransform):
         self.max_attempts = max(1, int(max_attempts))
 
     @staticmethod
-    def _sample_size(value_range, full_size):
+    def _sample_size(value_range: tuple[float, float], full_size: int) -> int:
         value = random.uniform(*value_range)
         pixels = value * full_size if 0 <= value <= 1 else value
         return max(1, min(full_size, int(round(pixels))))
 
     @staticmethod
-    def _random_fill(shape, dtype):
+    def _random_fill(shape: tuple[int, ...], dtype: np.dtype[ImageScalar]) -> ImageArray:
         if np.issubdtype(dtype, np.integer):
-            return np.random.randint(0, 256, size=shape, dtype=dtype)
+            return np.random.randint(0, 256, size=shape, dtype=cast(np.dtype[np.uint8], dtype))
         return np.random.random(size=shape).astype(dtype)
 
-    def _fill_value(self, shape, dtype):
+    def _fill_value(
+        self, shape: tuple[int, ...], dtype: np.dtype[ImageScalar]
+    ) -> ImageArray:
         if self.fill == "random" or random.random() < self.random_fill_p:
             return self._random_fill(shape, dtype)
         return np.asarray(self.fill, dtype=dtype)
 
     @staticmethod
-    def _boxes_xyxy(labels, width, height):
+    def _boxes_xyxy(
+        labels: AugmentationLabels, width: int, height: int
+    ) -> FloatArray | None:
         instances = labels.get("instances")
         if instances is None or len(instances) == 0:
             return None
@@ -291,7 +357,9 @@ class RandomOcclusion(BaseTransform):
         area = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
         return boxes[area > 1e-6]
 
-    def _is_allowed(self, rectangle, boxes):
+    def _is_allowed(
+        self, rectangle: tuple[int, int, int, int], boxes: FloatArray | None
+    ) -> bool:
         if self.max_bbox_overlap >= 1 or boxes is None or len(boxes) == 0:
             return True
         x1, y1, x2, y2 = rectangle
@@ -305,7 +373,7 @@ class RandomOcclusion(BaseTransform):
         )
         return float(np.max(intersection / box_area)) <= self.max_bbox_overlap
 
-    def __call__(self, labels):
+    def __call__(self, labels: AugmentationLabels) -> AugmentationLabels:
         if random.random() > self.p:
             return labels
         image = labels.get("img")
@@ -331,14 +399,22 @@ class RandomOcclusion(BaseTransform):
         labels["img"] = image
         return labels
 
-    def apply_image(self, labels):
+    def apply_image(self, labels: AugmentationLabels) -> AugmentationLabels:
         return labels
 
-    def apply_instances(self, labels):
+    def apply_instances(self, labels: AugmentationLabels) -> AugmentationLabels:
         return labels
 
 
-def build_image_augmentations(config):
+def _number(value: ConfigValue) -> float:
+    if not isinstance(value, (str, int, float)):
+        raise ValueError(f"Expected a number, got {value!r}")
+    return float(value)
+
+
+def build_image_augmentations(
+    config: ConfigMap,
+) -> list[BasicTransform | BaseCompose] | None:
     """Build image-only Albumentations transforms for ``YOLO.train``."""
     if not config.get("enabled", True):
         return None
@@ -346,24 +422,34 @@ def build_image_augmentations(config):
     os.environ["NO_ALBUMENTATIONS_UPDATE"] = "1"
     import albumentations as A
 
-    definitions = config.get("transforms") or {}
-    if not isinstance(definitions, dict):
-        raise ValueError("albumentations.transforms must be a mapping")
-    transforms = {
-        name: make_object_from_config(definition)
-        for name, definition in definitions.items()
-    }
+    definitions = config_section(config, "transforms")
+    transforms: dict[str, BasicTransform | BaseCompose] = {}
+    for name, definition in definitions.items():
+        transform = make_object_from_config(definition)
+        if not isinstance(transform, (A.BasicTransform, A.BaseCompose)):
+            raise ValueError(f"Image augmentation {name!r} must be an Albumentations transform")
+        transforms[name] = transform
 
     groups = config.get("oneof_groups") or []
+    if not isinstance(groups, list):
+        raise ValueError("albumentations.oneof_groups must be a list")
+    result: list[BasicTransform | BaseCompose]
     if groups:
         result = []
         for group in groups:
+            if not isinstance(group, dict):
+                raise ValueError("Each oneof group must be a mapping")
             names = group.get("transforms") or []
-            missing = [name for name in names if name not in transforms]
+            if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+                raise ValueError("Group transforms must be a list of names")
+            group_names = cast(list[str], names)
+            missing = [name for name in group_names if name not in transforms]
             if missing:
                 group_name = group.get("name", "<unnamed>")
                 raise ValueError(f"Unknown transforms in group {group_name}: {missing}")
-            result.append(A.OneOf([transforms[name] for name in names], p=group["p"]))
+            result.append(
+                A.OneOf([transforms[name] for name in group_names], p=_number(group["p"]))
+            )
     else:
         result = list(transforms.values())
 
@@ -374,7 +460,7 @@ def build_image_augmentations(config):
     return result
 
 
-def _make_transform(config, **overrides):
+def _make_transform(config: ConfigMap, **overrides: ConfigValue) -> LabelTransform:
     definition = {
         key: value
         for key, value in (config or {}).items()
@@ -383,10 +469,18 @@ def _make_transform(config, **overrides):
     definition.update(overrides)
     if "_class_name" not in definition:
         raise ValueError("Custom augmentation config requires _class_name")
-    return make_object_from_config(definition)
+    transform = make_object_from_config(definition)
+    if not callable(transform):
+        raise ValueError("Custom augmentation must be callable")
+    return cast(LabelTransform, transform)
 
 
-def _insert_before(dataset, transform, transform_type, fallback_index):
+def _insert_before(
+    dataset: YOLODataset,
+    transform: LabelTransform,
+    transform_type: type[BaseTransform] | type[Format] | type[LetterBox],
+    fallback_index: Callable[[Sequence[object]], int],
+) -> None:
     pipeline = dataset.transforms
     if pipeline is None:
         return
@@ -401,18 +495,18 @@ def _insert_before(dataset, transform, transform_type, fallback_index):
     pipeline.insert(index, transform)
 
 
-def _insert_spatial(dataset, transform):
+def _insert_spatial(dataset: YOLODataset, transform: LabelTransform) -> None:
     _insert_before(dataset, transform, LetterBox, lambda _: 0)
 
 
-def _insert_occlusion(dataset, transform):
+def _insert_occlusion(dataset: YOLODataset, transform: LabelTransform) -> None:
     _insert_before(dataset, transform, Format, len)
 
 
-def apply_pose_augmentations(dataset, config):
+def apply_pose_augmentations(dataset: YOLODataset, config: ConfigMap) -> YOLODataset:
     """Inject the configured pose-safe spatial and occlusion transforms."""
-    crop = config.get("random_crop") or {}
-    occlusion = config.get("random_occlusion") or {}
+    crop = config_section(config, "random_crop")
+    occlusion = config_section(config, "random_occlusion")
     if crop.get("enabled"):
         _insert_spatial(dataset, _make_transform(crop))
     if occlusion.get("enabled"):
@@ -420,11 +514,11 @@ def apply_pose_augmentations(dataset, config):
     return dataset
 
 
-def apply_detection_augmentations(dataset, config):
+def apply_detection_augmentations(dataset: YOLODataset, config: ConfigMap) -> YOLODataset:
     """Inject the configured detection-safe crop and occlusion transforms."""
-    random_crop = config.get("random_crop") or {}
-    box_crop = config.get("box_crop") or {}
-    choice = config.get("crop_choice") or {}
+    random_crop = config_section(config, "random_crop")
+    box_crop = config_section(config, "box_crop")
+    choice = config_section(config, "crop_choice")
     enabled_crops = {
         name: section
         for name, section in {
@@ -435,20 +529,20 @@ def apply_detection_augmentations(dataset, config):
     }
 
     if choice.get("enabled") and enabled_crops:
-        weights = choice.get("weights") or {}
+        weights = config_section(choice, "weights")
         _insert_spatial(
             dataset,
             RandomChoice(
                 [_make_transform(section, p=1.0) for section in enabled_crops.values()],
-                weights=[float(weights.get(name, 1.0)) for name in enabled_crops],
-                p=float(choice.get("p", 0.5)),
+                weights=[_number(weights.get(name, 1.0)) for name in enabled_crops],
+                p=_number(choice.get("p", 0.5)),
             ),
         )
     else:
         for section in enabled_crops.values():
             _insert_spatial(dataset, _make_transform(section))
 
-    occlusion = config.get("random_occlusion") or {}
+    occlusion = config_section(config, "random_occlusion")
     if occlusion.get("enabled"):
         _insert_occlusion(dataset, _make_transform(occlusion))
     return dataset

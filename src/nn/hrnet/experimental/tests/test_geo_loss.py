@@ -11,11 +11,22 @@ Run:
   export PYTHONPATH=cv/nn/hrnet/train:/path/to/mmpose:$PYTHONPATH
   python cv/nn/hrnet/train/test_geo_loss.py
 """
+from __future__ import annotations
+
 import json
 import math
 import os
 import sys
 from pathlib import Path
+from typing import TypedDict, cast
+
+from nn.hrnet.data.schema import CocoDataset
+
+
+class GroundTruthSample(TypedDict):
+    file_name: str
+    input_size: int
+    coords: list[list[float]]
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TRAIN_DIR = Path(__file__).resolve().parent
@@ -32,11 +43,11 @@ DLT_TOL    = 1e-10   # normalised squared error tolerance
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def load_gt_samples(anno_file, n):
+def load_gt_samples(anno_file: str | Path, n: int) -> list[GroundTruthSample]:
     with open(anno_file) as f:
-        data = json.load(f)
+        data = cast(CocoDataset, json.load(f))
     img_info = {im['id']: im for im in data['images']}
-    samples = []
+    samples: list[GroundTruthSample] = []
     for anno in data['annotations']:
         kpts = anno['keypoints']
         coords, all_vis = [], True
@@ -57,7 +68,7 @@ def load_gt_samples(anno_file, n):
 
 # ── test 1: DLT reproj ≈ 0 on GT ─────────────────────────────────────────────
 
-def test_dlt_zero_on_gt():
+def test_dlt_zero_on_gt() -> None:
     print("=== Test 1: DLT reprojection error on GT annotations ===")
     samples = load_gt_samples(ANNO_FILE, N_SAMPLES)
     errors, max_pixel_rmse = [], 0.0
@@ -80,7 +91,7 @@ def test_dlt_zero_on_gt():
 
 # ── test 2: chirality is directionally correct on TL↔TR swap ────────────────
 
-def test_chirality_fires_on_swap():
+def test_chirality_fires_on_swap() -> None:
     """
     Chirality fires (loss > 0) when sin_theta crosses zero.
     For oblique views where TL and TR project close together, sin_theta may
@@ -127,7 +138,7 @@ def test_chirality_fires_on_swap():
 
 # ── test 3: gradient flows ────────────────────────────────────────────────────
 
-def test_gradient_flows():
+def test_gradient_flows() -> None:
     print("=== Test 3: Gradient flows through forward_coords ===")
     loss_fn = GeometricConsistencyLoss(input_size=256, heatmap_size=128,
                                         hom_weight=0.1, chiral_weight=0.05)
@@ -143,7 +154,7 @@ def test_gradient_flows():
 
 # ── test 4: loss increases monotonically with prediction error ────────────────
 
-def test_loss_increases_with_error():
+def test_loss_increases_with_error() -> None:
     """
     Starting from GT coords, add Gaussian noise of increasing sigma.
     DLT reproj loss must increase monotonically (in expectation).
@@ -196,7 +207,7 @@ def test_loss_increases_with_error():
 
 # ── test 5: DLT geometry — translation invariance & condition number ─────────
 
-def test_wrong_prediction_scenarios():
+def test_wrong_prediction_scenarios() -> None:
     """
     DLT geometry properties — observe, no strict assertions on outlier magnitude.
 

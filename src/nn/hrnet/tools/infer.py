@@ -5,9 +5,23 @@ import argparse
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
+
+from nn.utils import ConfigMap
+
+if TYPE_CHECKING:
+    from torch import Tensor
+    from mmpose.models.pose_estimators import BasePoseEstimator
+    from mmpose.structures import PoseDataSample
+    from ultralytics.engine.results import Results
+
+ImageArray: TypeAlias = NDArray[np.uint8]
+FloatArray: TypeAlias = NDArray[np.float32]
+ImageReference: TypeAlias = str | Path | ImageArray
 
 # MMEngine 0.10 does not pass weights_only=False to torch.load. PyTorch 2.6+
 # otherwise rejects standard MMPose checkpoints containing ConfigDict metadata.
@@ -23,21 +37,21 @@ HRNET_ROOT = Path(__file__).resolve().parents[1]
 
 @dataclass
 class PoseInstance:
-    bbox_xyxy: np.ndarray
+    bbox_xyxy: FloatArray
     yolo_score: float
-    keypoints_xy: np.ndarray
-    keypoint_scores: np.ndarray
-    keypoint_in_frame_scores: Optional[np.ndarray] = None
+    keypoints_xy: FloatArray
+    keypoint_scores: FloatArray
+    keypoint_in_frame_scores: FloatArray | None = None
 
 
 @dataclass
 class ImagePoseResult:
-    image: Union[str, Path, np.ndarray]
+    image: ImageReference
     image_shape_hw: tuple[int, int]
     instances: list[PoseInstance] = field(default_factory=list)
-    keypoint_names: Optional[list[str]] = None
-    skeleton: Optional[list[tuple[int, int]]] = None
-    keypoint_colors: Optional[list[tuple[int, int, int]]] = None
+    keypoint_names: list[str] | None = None
+    skeleton: list[tuple[int, int]] | None = None
+    keypoint_colors: list[tuple[int, int, int]] | None = None
 
 
 _DEFAULT_KPT_NAMES = [
@@ -81,17 +95,17 @@ _DEFAULT_KPT_COLORS = [
 ]
 
 
-def _rgb_to_bgr(color) -> tuple[int, int, int]:
+def _rgb_to_bgr(color: ArrayLike) -> tuple[int, int, int]:
     vals = list(np.asarray(color).reshape(-1)[:3].astype(int))
     if len(vals) < 3:
         vals = (vals + [255, 255, 255])[:3]
     return (int(vals[2]), int(vals[1]), int(vals[0]))
 
 
-def _resolve_vis_spec(model) -> tuple[list[str], list[tuple[int, int]], list[tuple[int, int, int]]]:
+def _resolve_vis_spec(model: BasePoseEstimator) -> tuple[list[str], list[tuple[int, int]], list[tuple[int, int, int]]]:
     metainfo = getattr(model, "dataset_meta", None) or {}
-    keypoint_info = metainfo.get("keypoint_info", {})
-    skeleton_info = metainfo.get("skeleton_info", {})
+    keypoint_info = cast(dict[int, ConfigMap], metainfo.get("keypoint_info", {}))
+    skeleton_info = cast(dict[int, ConfigMap], metainfo.get("skeleton_info", {}))
 
     names = []
     for idx in sorted(keypoint_info):
@@ -102,7 +116,7 @@ def _resolve_vis_spec(model) -> tuple[list[str], list[tuple[int, int]], list[tup
     name_to_idx = {name: idx for idx, name in enumerate(names)}
     skeleton = []
     for idx in sorted(skeleton_info):
-        link = skeleton_info[idx].get("link")
+        link = cast(list[str] | tuple[str, str] | None, skeleton_info[idx].get("link"))
         if not link or len(link) < 2:
             continue
         if link[0] in name_to_idx and link[1] in name_to_idx:
@@ -112,25 +126,36 @@ def _resolve_vis_spec(model) -> tuple[list[str], list[tuple[int, int]], list[tup
 
     colors = []
     for idx in sorted(keypoint_info):
-        colors.append(_rgb_to_bgr(keypoint_info[idx].get("color", [255, 255, 255])))
+        colors.append(_rgb_to_bgr(cast(ArrayLike, keypoint_info[idx].get("color", [255, 255, 255]))))
     if not colors:
         colors = list(_DEFAULT_KPT_COLORS)
     return names, skeleton, colors
 
 
-def _extract_class_bboxes(result, class_id: int, conf_threshold: float) -> tuple[np.ndarray, np.ndarray]:
+def _as_float32(values: Tensor | FloatArray) -> FloatArray:
+    """Normalize the tensor/NumPy forms supported by Ultralytics results."""
+    from torch import Tensor
+
+    if isinstance(values, Tensor):
+        return np.asarray(values.cpu().numpy(), dtype=np.float32)
+    return np.asarray(values, dtype=np.float32)
+
+
+def _extract_class_bboxes(
+    result: Results, class_id: int, conf_threshold: float,
+) -> tuple[FloatArray, FloatArray]:
     if result.boxes is None or len(result.boxes) == 0:
         return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32)
 
     boxes = result.boxes
-    xyxy = boxes.xyxy.cpu().numpy().astype(np.float32)
-    cls = boxes.cls.cpu().numpy().astype(np.int32)
-    conf = boxes.conf.cpu().numpy().astype(np.float32)
+    xyxy = _as_float32(boxes.xyxy)
+    cls = _as_float32(boxes.cls).astype(np.int32)
+    conf = _as_float32(boxes.conf)
     keep = (cls == int(class_id)) & (conf >= float(conf_threshold))
     return xyxy[keep], conf[keep]
 
 
-def _pose_sample_to_instance(sample, bbox_xyxy: np.ndarray, yolo_score: float) -> PoseInstance:
+def _pose_sample_to_instance(sample: PoseDataSample, bbox_xyxy: FloatArray, yolo_score: float) -> PoseInstance:
     inst = sample.pred_instances
     keypoints_xy = np.asarray(inst.keypoints[0], dtype=np.float32)
 
@@ -154,7 +179,7 @@ def _pose_sample_to_instance(sample, bbox_xyxy: np.ndarray, yolo_score: float) -
     )
 
 
-def draw_pose_result(image_bgr: np.ndarray, result: ImagePoseResult, draw_scores: bool = True) -> np.ndarray:
+def draw_pose_result(image_bgr: ImageArray, result: ImagePoseResult, draw_scores: bool = True) -> ImageArray:
     import cv2
 
     out = image_bgr.copy()
@@ -205,9 +230,9 @@ def draw_pose_result(image_bgr: np.ndarray, result: ImagePoseResult, draw_scores
 
 
 def save_pose_result_image(
-    image_bgr: np.ndarray,
+    image_bgr: ImageArray,
     result: ImagePoseResult,
-    output_path: Union[str, Path],
+    output_path: str | Path,
     draw_scores: bool = True,
 ) -> Path:
     import cv2
@@ -221,9 +246,9 @@ def save_pose_result_image(
 class TopDownKeypointPipeline:
     def __init__(
         self,
-        yolo_weights: Union[str, Path],
-        hrnet_config: Union[str, Path],
-        hrnet_checkpoint: Union[str, Path],
+        yolo_weights: str | Path,
+        hrnet_config: str | Path,
+        hrnet_checkpoint: str | Path,
         device: str = "cuda:0",
         detector_device: str = "cpu",
         bbox_class_id: int = 1,
@@ -240,7 +265,7 @@ class TopDownKeypointPipeline:
             if not (path.exists() if is_detector else path.is_file()):
                 raise FileNotFoundError(f"{name} not found: {path}")
 
-        from ultralytics import YOLO
+        from ultralytics.models.yolo.model import YOLO
         from mmpose.apis import init_model
 
         self.device = device
@@ -257,19 +282,28 @@ class TopDownKeypointPipeline:
         )
         self._vis_keypoint_names, self._vis_skeleton, self._vis_keypoint_colors = _resolve_vis_spec(self._pose)
 
-    def _run_pose_inference(self, image_bgr: np.ndarray, xyxy: np.ndarray):
+    def _run_pose_inference(
+        self, image_bgr: ImageArray, xyxy: FloatArray,
+    ) -> list[PoseDataSample]:
         from mmpose.apis import inference_topdown
 
-        return inference_topdown(self._pose, image_bgr, xyxy, bbox_format="xyxy")
+        return cast(list["PoseDataSample"], inference_topdown(self._pose, image_bgr, xyxy, bbox_format="xyxy"))
 
     def predict_numpy(
         self,
-        image_bgr: np.ndarray,
-        image_id: Optional[Union[str, Path]] = None,
+        image_bgr: ImageArray,
+        image_id: str | Path | None = None,
     ) -> ImagePoseResult:
         h, w = image_bgr.shape[:2]
-        ref: Union[str, Path, np.ndarray] = image_id if image_id is not None else image_bgr
+        ref: ImageReference = image_id if image_id is not None else image_bgr
 
+        result = ImagePoseResult(
+            image=ref,
+            image_shape_hw=(h, w),
+            keypoint_names=list(self._vis_keypoint_names),
+            skeleton=list(self._vis_skeleton),
+            keypoint_colors=list(self._vis_keypoint_colors),
+        )
         yolo_results = self._yolo(
             image_bgr,
             verbose=False,
@@ -277,13 +311,7 @@ class TopDownKeypointPipeline:
             device=self.detector_device,
         )
         if not yolo_results:
-            return ImagePoseResult(
-                image=ref,
-                image_shape_hw=(h, w),
-                keypoint_names=list(self._vis_keypoint_names),
-                skeleton=list(self._vis_skeleton),
-                keypoint_colors=list(self._vis_keypoint_colors),
-            )
+            return result
 
         xyxy, box_scores = _extract_class_bboxes(
             yolo_results[0],
@@ -291,13 +319,7 @@ class TopDownKeypointPipeline:
             conf_threshold=self.yolo_conf,
         )
         if xyxy.shape[0] == 0:
-            return ImagePoseResult(
-                image=ref,
-                image_shape_hw=(h, w),
-                keypoint_names=list(self._vis_keypoint_names),
-                skeleton=list(self._vis_skeleton),
-                keypoint_colors=list(self._vis_keypoint_colors),
-            )
+            return result
 
         if self.crop_margin > 0:
             ws = (xyxy[:, 2] - xyxy[:, 0]) * self.crop_margin
@@ -309,30 +331,23 @@ class TopDownKeypointPipeline:
             xyxy[:, 3] = np.clip(xyxy[:, 3] + hs, 0, h)
 
         pose_samples = self._run_pose_inference(image_bgr, xyxy)
-        instances = [
+        result.instances = [
             _pose_sample_to_instance(sample, xyxy[idx], float(box_scores[idx]))
             for idx, sample in enumerate(pose_samples)
         ]
 
-        return ImagePoseResult(
-            image=ref,
-            image_shape_hw=(h, w),
-            instances=instances,
-            keypoint_names=list(self._vis_keypoint_names),
-            skeleton=list(self._vis_skeleton),
-            keypoint_colors=list(self._vis_keypoint_colors),
-        )
+        return result
 
-    def predict_image(self, path: Union[str, Path]) -> ImagePoseResult:
+    def predict_image(self, path: str | Path) -> ImagePoseResult:
         import cv2
 
         path = Path(path)
-        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        image = cast(ImageArray | None, cv2.imread(str(path), cv2.IMREAD_COLOR))
         if image is None:
             raise FileNotFoundError(f"Cannot read image: {path}")
         return self.predict_numpy(image, image_id=path)
 
-    def predict_images(self, paths: Sequence[Union[str, Path]]) -> list[ImagePoseResult]:
+    def predict_images(self, paths: Sequence[str | Path]) -> list[ImagePoseResult]:
         return [self.predict_image(path) for path in paths]
 
 
@@ -389,7 +404,7 @@ def _run_image_cli(args: argparse.Namespace) -> None:
     import cv2
 
     for image_path in [Path(path) for path in args.images]:
-        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        image = cast(ImageArray | None, cv2.imread(str(image_path), cv2.IMREAD_COLOR))
         if image is None:
             raise FileNotFoundError(f"Cannot read image: {image_path}")
         result = pipeline.predict_numpy(image, image_id=image_path)
@@ -418,45 +433,50 @@ def _run_video_cli(args: argparse.Namespace) -> None:
     if not cap.isOpened():
         raise FileNotFoundError(f"Cannot open video: {source}")
 
-    in_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    stride = max(1, args.frame_stride)
-    out_fps = args.output_fps if args.output_fps > 0 else max(in_fps / stride, 1.0)
+    writer: cv2.VideoWriter | None = None
+    try:
+        in_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        stride = max(1, args.frame_stride)
+        out_fps = args.output_fps if args.output_fps > 0 else max(in_fps / stride, 1.0)
 
-    writer = cv2.VideoWriter(
-        str(output),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        out_fps,
-        (width, height),
-    )
-    if not writer.isOpened():
-        raise RuntimeError(f"Cannot create output video: {output}")
+        writer = cv2.VideoWriter(
+            str(output),
+            cv2.VideoWriter.fourcc(*"mp4v"),
+            out_fps,
+            (width, height),
+        )
+        if not writer.isOpened():
+            raise RuntimeError(f"Cannot create output video: {output}")
 
-    frame_idx = 0
-    written = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if frame_idx < args.start_frame:
+        frame_idx = 0
+        written = 0
+        while True:
+            ok, raw_frame = cap.read()
+            if not ok:
+                break
+            frame = cast(ImageArray, raw_frame)
+            if frame_idx < args.start_frame:
+                frame_idx += 1
+                continue
+            if args.end_frame >= 0 and frame_idx > args.end_frame:
+                break
+            if (frame_idx - args.start_frame) % stride != 0:
+                frame_idx += 1
+                continue
+            if args.max_frames >= 0 and written >= args.max_frames:
+                break
+
+            result = pipeline.predict_numpy(frame, image_id=f"frame_{frame_idx:06d}")
+            writer.write(draw_pose_result(frame, result, draw_scores=not args.no_draw_scores))
+            written += 1
             frame_idx += 1
-            continue
-        if args.end_frame >= 0 and frame_idx > args.end_frame:
-            break
-        if (frame_idx - args.start_frame) % stride != 0:
-            frame_idx += 1
-            continue
-        if args.max_frames >= 0 and written >= args.max_frames:
-            break
 
-        result = pipeline.predict_numpy(frame, image_id=f"frame_{frame_idx:06d}")
-        writer.write(draw_pose_result(frame, result, draw_scores=not args.no_draw_scores))
-        written += 1
-        frame_idx += 1
-
-    cap.release()
-    writer.release()
+    finally:
+        cap.release()
+        if writer is not None:
+            writer.release()
     print(f"saved video: {output}")
 
 

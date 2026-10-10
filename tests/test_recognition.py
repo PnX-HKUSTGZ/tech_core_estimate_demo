@@ -182,6 +182,17 @@ class RecognitionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "nonfinite"):
             recognizer.predict(self._image)
 
+    def test_targets_keep_per_detection_inference_and_error_order(self) -> None:
+        # The first target reaches HRNet before the next target's box is read.
+        # Eagerly collecting all boxes during refactoring changes this error.
+        heatmaps = np.full((1, 12, 4, 4), np.nan, dtype=np.float32)
+        recognizer = self._recognizer(
+            [[0, 16, 64, 48, 0.9, 1], [20, 20, 10, 30, 0.8, 1]],
+            heatmaps=heatmaps,
+        )
+        with self.assertRaisesRegex(ValueError, "LiteHRNet heatmaps contain nonfinite"):
+            recognizer.predict(self._image)
+
     def test_missing_weights_ambiguous_paths_and_unavailable_devices(self) -> None:
         yolo_path = self._model(np.zeros((1, 1, 6), np.float32), (1, 3, 64, 64))
         hrnet_path = self._model(np.zeros((1, 12, 4, 4), np.float32), (1, 3, 256, 256))

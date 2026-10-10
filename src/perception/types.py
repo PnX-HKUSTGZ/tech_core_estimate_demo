@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypeAlias
 
 import numpy as np
 from numpy.typing import NDArray
 
-FloatArray = NDArray[np.float64]
-ImageArray = NDArray[np.uint8]
+FloatArray: TypeAlias = NDArray[np.float64]
+ImageArray: TypeAlias = NDArray[np.uint8]
 
 PILLAR_NAMES = ("TL", "TR", "BL", "BR", "ring")
 STATION_NAMES = (

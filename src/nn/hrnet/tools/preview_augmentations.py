@@ -9,6 +9,9 @@ os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
 
 import cv2
 import numpy as np
+from numpy.typing import NDArray
+from torch import Tensor
+from typing import cast
 from mmengine.config import Config
 from mmengine.utils import import_modules_from_strings
 from mmpose.registry import DATASETS
@@ -25,10 +28,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def tensor_to_bgr(inputs) -> np.ndarray:
+def tensor_to_bgr(inputs: Tensor) -> NDArray[np.uint8]:
     image = inputs.detach().cpu().numpy().transpose(1, 2, 0)
     image = np.clip(image, 0, 255).astype(np.uint8)
-    return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    return cast(NDArray[np.uint8], cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
 
 
 def main() -> None:

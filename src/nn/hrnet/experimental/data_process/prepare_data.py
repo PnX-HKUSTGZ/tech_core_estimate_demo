@@ -31,92 +31,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from dataclasses import dataclass
 from glob import glob
 
 import cv2
 
-
-PILLAR_KPT_NAMES = ["TL", "TR", "BL", "BR", "ring"]
-EXCHANGE_KPT_NAMES = [
-    "light_BR",
-    "light_TR",
-    "shell_R",
-    "shell_M",
-    "shell_L",
-    "light_TL",
-    "light_BL",
-]
-FULL_KPT_NAMES = PILLAR_KPT_NAMES + EXCHANGE_KPT_NAMES
-
-PILLAR_SKELETON = [[1, 2], [2, 4], [4, 3], [3, 1]]
-EXCHANGE_SKELETON = [[6, 7], [7, 11], [11, 12], [12, 6], [7, 8], [8, 9], [9, 10], [10, 11]]
-FULL_SKELETON = PILLAR_SKELETON + EXCHANGE_SKELETON
+from nn.hrnet.data.convert_yolo_to_coco import (
+    EXCHANGE_KPT_NAMES as EXCHANGE_KPT_NAMES,
+    EXCHANGE_SKELETON as EXCHANGE_SKELETON,
+    FULL_KPT_NAMES, FULL_SKELETON, PILLAR_KPT_NAMES, PILLAR_SKELETON,
+    LabelRecord as LabelRecord, clamp_bbox_xywh as clamp_bbox_xywh,
+    find_image as find_image, parse_label_line as parse_label_line,
+    yolo_bbox_to_coco_xywh as yolo_bbox_to_coco_xywh,
+)
+from nn.hrnet.data.schema import CocoAnnotation, CocoCategory, CocoDataset, CocoImage, CocoInstance
 
 PILLAR_FLIP_IDX = [1, 0, 3, 2, 4]
 FULL_FLIP_IDX = [1, 0, 3, 2, 4, 11, 10, 9, 8, 7, 6, 5]
-
-
-@dataclass
-class LabelRecord:
-    cls_id: int
-    bbox_cx: float
-    bbox_cy: float
-    bbox_w: float
-    bbox_h: float
-    all_kpts: list[tuple[float, float, int]]
-
-
-def parse_label_line(line: str, total_kpts: int = 12) -> LabelRecord:
-    vals = list(map(float, line.strip().split()))
-    expected_len = 5 + total_kpts * 3
-    if len(vals) != expected_len:
-        raise ValueError(f"Bad label length: got {len(vals)}, expected {expected_len}")
-
-    cls_id = int(vals[0])
-    bbox_cx, bbox_cy, bbox_w, bbox_h = vals[1], vals[2], vals[3], vals[4]
-
-    all_kpts = []
-    for i in range(total_kpts):
-        base = 5 + i * 3
-        all_kpts.append((vals[base], vals[base + 1], int(vals[base + 2])))
-
-    return LabelRecord(
-        cls_id=cls_id,
-        bbox_cx=bbox_cx,
-        bbox_cy=bbox_cy,
-        bbox_w=bbox_w,
-        bbox_h=bbox_h,
-        all_kpts=all_kpts,
-    )
-
-
-def find_image(image_dir: str, stem: str) -> str | None:
-    for ext in (".jpg", ".png", ".jpeg", ".bmp", ".webp"):
-        candidate = os.path.join(image_dir, stem + ext)
-        if os.path.exists(candidate):
-            return candidate
-    return None
-
-
-def clamp_bbox_xywh(x: float, y: float, w: float, h: float, img_w: int, img_h: int):
-    x = max(0.0, x)
-    y = max(0.0, y)
-    w = max(0.0, min(w, img_w - x))
-    h = max(0.0, min(h, img_h - y))
-    return x, y, w, h
-
-
-def yolo_bbox_to_coco_xywh(
-    rec: LabelRecord,
-    img_w: int,
-    img_h: int,
-) -> tuple[float, float, float, float]:
-    x = (rec.bbox_cx - rec.bbox_w / 2.0) * img_w
-    y = (rec.bbox_cy - rec.bbox_h / 2.0) * img_h
-    w = rec.bbox_w * img_w
-    h = rec.bbox_h * img_h
-    return clamp_bbox_xywh(x, y, w, h, img_w, img_h)
 
 
 def keypoints_to_coco(
@@ -144,8 +74,8 @@ def build_pillar5_instances(
     img_h: int,
     pillar_class_id: int,
     keep_kpts: int,
-) -> list[dict]:
-    out = []
+) -> list[CocoInstance]:
+    out: list[CocoInstance] = []
     for rec in records:
         if rec.cls_id != pillar_class_id:
             continue
@@ -171,8 +101,8 @@ def build_exchange12_instances(
     pillar_class_id: int,
     exchange_class_id: int,
     pillar_kpts: int,
-) -> tuple[list[dict], int]:
-    out = []
+) -> tuple[list[CocoInstance], int]:
+    out: list[CocoInstance] = []
     pending_pillars: list[LabelRecord] = []
     skipped_exchange = 0
 
@@ -217,10 +147,11 @@ def process_split(
     exchange_class_id: int = 1,
     keep_kpts: int = 5,
 ) -> None:
-    images = []
-    annotations = []
+    images: list[CocoImage] = []
+    annotations: list[CocoAnnotation] = []
     skipped_pairs = 0
 
+    categories: list[CocoCategory]
     if mode == "pillar5":
         categories = [
             {
@@ -314,7 +245,7 @@ def process_split(
 
         img_id += 1
 
-    coco = {
+    coco: CocoDataset = {
         "images": images,
         "annotations": annotations,
         "categories": categories,

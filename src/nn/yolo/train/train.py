@@ -1,14 +1,26 @@
 #!/usr/bin/env python3
 """Unified Ultralytics training entry point for pose and detection models."""
 
+from __future__ import annotations
+
 import argparse
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+from nn.utils import ConfigMap, ConfigValue, as_config_mapping, config_section
+
+if TYPE_CHECKING:
+    from ultralytics.models.yolo.detect import DetectionTrainer
+    from ultralytics.models.yolo.pose import PoseTrainer
+    from ultralytics.utils.metrics import DetMetrics
+
 
 TRAIN_DIR = Path(__file__).resolve().parent
 YOLO_ROOT = TRAIN_DIR.parent
 DEFAULT_CONFIG = YOLO_ROOT / "configs" / "train_pose.yaml"
 
-CLI_OVERRIDES = {
+CLI_OVERRIDES: dict[str, tuple[str, ...]] = {
     "task": ("task",),
     "model": ("model",),
     "data": ("data",),
@@ -28,17 +40,18 @@ CLI_OVERRIDES = {
 }
 
 
-def _merge_config(base, override):
+def _merge_config(base: ConfigMap, override: ConfigMap) -> ConfigMap:
     merged = dict(base)
     for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_config(merged[key], value)
+        previous = merged.get(key)
+        if isinstance(value, dict) and isinstance(previous, dict):
+            merged[key] = _merge_config(previous, value)
         else:
             merged[key] = value
     return merged
 
 
-def _read_yaml(path, stack=()):
+def _read_yaml(path: Path, stack: tuple[Path, ...] = ()) -> ConfigMap:
     import yaml
 
     path = path.resolve()
@@ -48,20 +61,20 @@ def _read_yaml(path, stack=()):
         raise FileNotFoundError(f"Missing training config: {path}")
 
     with path.open("r", encoding="utf-8") as file:
-        config = yaml.safe_load(file) or {}
-    if not isinstance(config, dict):
-        raise ValueError(f"Training config must be a YAML mapping: {path}")
+        config = as_config_mapping(
+            yaml.safe_load(file) or {}, f"Training config {path}"
+        )
 
     base_name = config.pop("_base_", None)
     if not base_name:
         return config
-    base_path = Path(base_name).expanduser()
+    base_path = Path(_string(base_name, "_base_")).expanduser()
     if not base_path.is_absolute():
         base_path = path.parent / base_path
     return _merge_config(_read_yaml(base_path, stack + (path,)), config)
 
 
-def load_config(path):
+def load_config(path: str | Path) -> ConfigMap:
     config_path = Path(path).expanduser()
     if not config_path.is_absolute():
         config_path = (Path.cwd() / config_path).resolve()
@@ -70,31 +83,41 @@ def load_config(path):
 
     for key in ("data", "resume"):
         value = config.get(key)
-        if value and not Path(value).expanduser().is_absolute():
-            config[key] = str((config_path.parent / value).resolve())
+        if value:
+            filename = _string(value, key)
+            if not Path(filename).expanduser().is_absolute():
+                config[key] = str((config_path.parent / filename).resolve())
 
-    project = (config.get("train") or {}).get("project")
-    if project and not Path(project).expanduser().is_absolute():
-        config["train"]["project"] = str((config_path.parent / project).resolve())
+    training = _section(config, "train")
+    project = training.get("project")
+    if project:
+        project_name = _string(project, "train.project")
+        if not Path(project_name).expanduser().is_absolute():
+            training["project"] = str((config_path.parent / project_name).resolve())
     return config
 
 
-def _set_nested(config, path, value):
+def _set_nested(config: ConfigMap, path: tuple[str, ...], value: ConfigValue) -> None:
     current = config
     for key in path[:-1]:
-        current = current.setdefault(key, {})
+        section = current.setdefault(key, {})
+        if not isinstance(section, dict):
+            raise ValueError(f"Config section {key!r} must be a mapping")
+        current = section
     current[path[-1]] = value
 
 
-def apply_cli_overrides(config, args):
+def apply_cli_overrides(config: ConfigMap, args: argparse.Namespace) -> ConfigMap:
     for argument, path in CLI_OVERRIDES.items():
-        value = getattr(args, argument, None)
+        value = cast(ConfigValue, getattr(args, argument, None))
         if value is not None:
             _set_nested(config, path, value)
     return config
 
 
-def _add_boolean_override(parser, name, help_text):
+def _add_boolean_override(
+    parser: argparse.ArgumentParser, name: str, help_text: str
+) -> None:
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         f"--{name.replace('_', '-')}",
@@ -111,7 +134,7 @@ def _add_boolean_override(parser, name, help_text):
     )
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--task", choices=("pose", "detect"))
@@ -135,25 +158,28 @@ def parse_args():
     return parser.parse_args()
 
 
-def _section(config, name):
-    value = config.get(name) or {}
-    if not isinstance(value, dict):
-        raise ValueError(f"Config section {name!r} must be a mapping")
+# Keep the historical helper name for callers while sharing section validation.
+_section = config_section
+
+
+def _string(value: object, name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"Config field {name!r} must be a string")
     return value
 
 
-def _model_path(config):
+def _model_path(config: ConfigMap) -> str:
     if config.get("resume"):
-        return config["resume"]
+        return _string(config["resume"], "resume")
     default = "yolo26n-pose.pt" if config["task"] == "pose" else "yolo26n.pt"
     model = str(config.get("model", default))
     return model if model.endswith((".pt", ".yaml", ".yml")) else f"{model}.pt"
 
 
-def _training_arguments(config):
+def _training_arguments(config: ConfigMap) -> dict[str, object]:
     from nn.yolo.train.augmentations import build_image_augmentations
 
-    arguments = {
+    arguments: dict[str, object] = {
         "data": config.get("data"),
         **_section(config, "train"),
         **_section(config, "yolo_aug"),
@@ -169,12 +195,15 @@ def _training_arguments(config):
     return {key: value for key, value in arguments.items() if value is not None}
 
 
-def _pose_trainer(config):
-    augmentation_config = {
+def _pose_trainer(config: ConfigMap) -> type[PoseTrainer] | None:
+    augmentation_config: ConfigMap = {
         "random_crop": _section(config, "random_crop"),
         "random_occlusion": _section(config, "random_occlusion"),
     }
-    if not any(section.get("enabled") for section in augmentation_config.values()):
+    if not any(
+        _section(augmentation_config, name).get("enabled")
+        for name in augmentation_config
+    ):
         return None
 
     from nn.yolo.train.trainers import create_pose_trainer
@@ -182,8 +211,8 @@ def _pose_trainer(config):
     return create_pose_trainer(augmentation_config)
 
 
-def _detect_trainer(config):
-    augmentation_config = {
+def _detect_trainer(config: ConfigMap) -> type[DetectionTrainer] | None:
+    augmentation_config: ConfigMap = {
         name: _section(config, name)
         for name in (
             "random_crop",
@@ -193,7 +222,7 @@ def _detect_trainer(config):
         )
     }
     if not any(
-        augmentation_config[name].get("enabled")
+        _section(augmentation_config, name).get("enabled")
         for name in ("random_crop", "box_crop", "random_occlusion")
     ):
         return None
@@ -203,7 +232,7 @@ def _detect_trainer(config):
     return create_detection_trainer(augmentation_config)
 
 
-def _configure_runtime():
+def _configure_runtime() -> None:
     import cv2
 
     cv2.setNumThreads(0)
@@ -213,10 +242,10 @@ def _configure_runtime():
         pass
 
 
-def train(config):
-    from ultralytics import YOLO
+def train(config: ConfigMap) -> DetMetrics | DetectionTrainer | None:
+    from ultralytics.models.yolo.model import YOLO
 
-    task = config.get("task", "pose")
+    task = _string(config.get("task", "pose"), "task")
     if task not in {"pose", "detect"}:
         raise ValueError("Config field 'task' must be 'pose' or 'detect'")
     config["task"] = task
@@ -231,15 +260,17 @@ def train(config):
         f"imgsz={arguments.get('imgsz')}"
     )
     if trainer_class is None:
-        result = YOLO(model_path).train(**arguments)
+        result: DetMetrics | DetectionTrainer | None = cast(
+            "DetMetrics | None", YOLO(model_path).train(**arguments)
+        )
     else:
         arguments["model"] = model_path
         trainer = trainer_class(overrides=arguments)
-        trainer.train()
+        cast(Callable[[], None], trainer.train)()
         result = trainer
 
-    project = Path(arguments.get("project", "runs"))
-    name = arguments.get("name", task)
+    project = Path(_string(arguments.get("project", "runs"), "train.project"))
+    name = _string(arguments.get("name", task), "train.name")
     weights_dir = project / name / "weights"
     best_weights = weights_dir / "best.pt"
     if not best_weights.exists():
@@ -261,7 +292,7 @@ def train(config):
     return result
 
 
-def main():
+def main() -> None:
     _configure_runtime()
     args = parse_args()
     config = apply_cli_overrides(load_config(args.config), args)

@@ -31,8 +31,8 @@ load_from = None
 resume = False
 
 train_cfg = dict(by_epoch=True, max_epochs=max_epochs, val_interval=2)
-val_cfg = dict()
-test_cfg = dict()
+val_cfg: dict[str, bool] = dict()
+test_cfg: dict[str, bool] = dict()
 custom_hooks = [dict(type="EarlyStoppingHook", monitor="coco/AP", rule="greater", patience=50, min_delta=0.001)]
 
 # MuSGD comes from ultralytics.optim and is registered in pillar_models.py.

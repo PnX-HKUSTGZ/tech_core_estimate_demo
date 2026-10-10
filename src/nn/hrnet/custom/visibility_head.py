@@ -3,6 +3,14 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from torch import Tensor
+from typing import TypeAlias, cast
+
+from mmengine.structures import InstanceData, PixelData
+from mmpose.structures import PoseDataSample
+from nn.utils import ConfigMap, ConfigValue
+
+Features: TypeAlias = tuple[Tensor, ...]
+Predictions: TypeAlias = list[InstanceData] | tuple[list[InstanceData], list[PixelData]]
 
 from mmpose.models.heads import HeatmapHead
 from mmpose.registry import MODELS
@@ -14,8 +22,8 @@ class HeatmapHeadWithVisibility(HeatmapHead):
 
     def __init__(
         self,
-        vis_loss: dict | None = None,
-        **kwargs,
+        vis_loss: ConfigMap | None = None,
+        **kwargs: ConfigValue | tuple[int, ...],
     ) -> None:
         super().__init__(**kwargs)
 
@@ -38,7 +46,7 @@ class HeatmapHeadWithVisibility(HeatmapHead):
             layers.append(nn.Sigmoid())
         self.vis_head = nn.Sequential(*layers)
 
-    def _get_in_frame_target(self, data_sample, device: torch.device) -> Tensor:
+    def _get_in_frame_target(self, data_sample: PoseDataSample, device: torch.device) -> Tensor:
         keypoint_weights = getattr(data_sample.gt_instance_labels, "keypoint_weights", None)
         if keypoint_weights is not None:
             keypoint_weights = torch.as_tensor(
@@ -73,13 +81,16 @@ class HeatmapHeadWithVisibility(HeatmapHead):
             keypoints_visible = keypoints_visible[..., 0]
         return (keypoints_visible > 0.5).float()
 
-    def vis_forward(self, feats) -> Tensor:
-        return self.vis_head(feats[-1]).reshape(-1, self.out_channels)
+    def vis_forward(self, feats: Features) -> Tensor:
+        return cast(Tensor, self.vis_head(feats[-1]).reshape(-1, self.out_channels))
 
-    def loss(self, feats, batch_data_samples, train_cfg=None):
+    def loss(
+        self, feats: Features, batch_data_samples: list[PoseDataSample],
+        train_cfg: ConfigMap | None = None,
+    ) -> dict[str, Tensor]:
         if train_cfg is None:
             train_cfg = {}
-        losses = super().loss(feats, batch_data_samples, train_cfg)
+        losses = cast(dict[str, Tensor], super().loss(feats, batch_data_samples, train_cfg))
 
         vis_pred = self.vis_forward(feats)
         vis_target = torch.cat(
@@ -88,18 +99,10 @@ class HeatmapHeadWithVisibility(HeatmapHead):
 
         vis_weights = None
         if self.vis_loss_module.use_target_weight:
-            vis_weights = torch.cat(
-                [
-                    torch.as_tensor(
-                        getattr(sample.gt_instance_labels, "keypoints_visible_weights", None),
-                        device=vis_pred.device,
-                        dtype=torch.float32,
-                    ).reshape(1, -1)
-                    if getattr(sample.gt_instance_labels, "keypoints_visible_weights", None) is not None
-                    else torch.ones_like(self._get_in_frame_target(sample, vis_pred.device))
-                    for sample in batch_data_samples
-                ]
-            )
+            vis_weights = torch.cat([
+                self._get_visibility_weight(sample, vis_pred.device)
+                for sample in batch_data_samples
+            ])
 
         losses["loss_vis"] = self.vis_loss_module(vis_pred, vis_target, vis_weights)
 
@@ -111,18 +114,28 @@ class HeatmapHeadWithVisibility(HeatmapHead):
 
         return losses
 
-    def predict(self, feats, batch_data_samples, test_cfg=None):
+    def _get_visibility_weight(self, sample: PoseDataSample, device: torch.device) -> Tensor:
+        weights = getattr(sample.gt_instance_labels, "keypoints_visible_weights", None)
+        if weights is None:
+            return torch.ones_like(self._get_in_frame_target(sample, device))
+        return torch.as_tensor(weights, device=device, dtype=torch.float32).reshape(1, -1)
+
+    def predict(
+        self, feats: Features | list[Features], batch_data_samples: list[PoseDataSample],
+        test_cfg: ConfigMap | None = None,
+    ) -> Predictions:
         if test_cfg is None:
             test_cfg = {}
-        preds = super().predict(feats, batch_data_samples, test_cfg)
+        preds = cast(Predictions, super().predict(feats, batch_data_samples, test_cfg))
 
         if test_cfg.get("flip_test", False):
+            flip_feats = cast(list[Features], feats)
             flip_indices = batch_data_samples[0].metainfo["flip_indices"]
-            vis = self.vis_forward(feats[0])
-            vis_flip = self.vis_forward(feats[1])[:, flip_indices]
+            vis = self.vis_forward(flip_feats[0])
+            vis_flip = self.vis_forward(flip_feats[1])[:, flip_indices]
             batch_vis = (vis + vis_flip) * 0.5
         else:
-            batch_vis = self.vis_forward(feats)
+            batch_vis = self.vis_forward(cast(Features, feats))
 
         from mmpose.utils.tensor_utils import to_numpy
 

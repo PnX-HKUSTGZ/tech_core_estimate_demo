@@ -7,8 +7,9 @@ successive frames; concurrent callers should use separate recognizer instances.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 import cv2
 import numpy as np
@@ -19,7 +20,7 @@ from .types import FloatArray, ImageArray, KeypointDetection
 if TYPE_CHECKING:
     from openvino import CompiledModel, Core, Model, PartialShape
 
-_Float32Array = NDArray[np.float32]
+_Float32Array: TypeAlias = NDArray[np.float32]
 _MEAN = np.array((123.675, 116.28, 103.53), dtype=np.float32)
 _STD = np.array((58.395, 57.12, 57.375), dtype=np.float32)
 
@@ -129,7 +130,11 @@ def _affine(bbox: FloatArray, size: tuple[int, int], padding: float) -> tuple[Fl
     for points in (src, dst):
         direction = points[0] - points[1]
         points[2] = points[1] + np.array((-direction[1], direction[0]), dtype=np.float32)
-    return cv2.getAffineTransform(src, dst), cv2.getAffineTransform(dst, src)
+    # OpenCV always returns double-precision affine matrices, while its stubs
+    # describe every numeric dtype. Normalize that boundary for callers.
+    forward = np.asarray(cv2.getAffineTransform(src, dst), dtype=np.float64)
+    inverse = np.asarray(cv2.getAffineTransform(dst, src), dtype=np.float64)
+    return forward, inverse
 
 
 def _decode(heatmaps: _Float32Array, size: tuple[int, int], inverse: FloatArray) -> tuple[FloatArray, FloatArray]:
@@ -208,6 +213,20 @@ class OpenVINORecognizer:
         if image_bgr.ndim != 3 or image_bgr.shape[2] != 3 or min(image_bgr.shape[:2]) <= 0:
             raise ValueError(f"image_bgr must be nonempty HxWx3 BGR, got {image_bgr.shape}")
         height, width = image_bgr.shape[:2]
+        detections: list[KeypointDetection] = []
+        for bbox, score in self._detect_boxes(image_bgr):
+            crop = bbox.copy()
+            margin_x = (bbox[2] - bbox[0]) * self._crop_margin
+            margin_y = (bbox[3] - bbox[1]) * self._crop_margin
+            crop[[0, 2]] = np.clip(crop[[0, 2]] + (-margin_x, margin_x), 0, width)
+            crop[[1, 3]] = np.clip(crop[[1, 3]] + (-margin_y, margin_y), 0, height)
+            points, scores = self._predict_keypoints(image_bgr, crop)
+            detections.append(KeypointDetection(bbox, score, points, scores, (height, width)))
+        return detections
+
+    def _detect_boxes(self, image_bgr: ImageArray) -> Iterator[tuple[FloatArray, float]]:
+        """Validate detector rows and restore boxes to original-image pixels."""
+        height, width = image_bgr.shape[:2]
         blob, scale, pad_x, pad_y = _letterbox(image_bgr, self._yolo_size)
         output = np.asarray(self._yolo([blob])[self._yolo.output()], dtype=np.float64)
         if output.ndim == 3 and output.shape[0] == 1:
@@ -222,7 +241,6 @@ class OpenVINORecognizer:
             raise ValueError("YOLO class IDs must be nonnegative integers")
         selected = output[(output[:, 4] >= self._confidence) & (output[:, 5] == 1)]
         selected = selected[np.argsort(-selected[:, 4], kind="stable")]
-        detections: list[KeypointDetection] = []
         for row in selected:
             bbox = row[:4].copy()
             if bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
@@ -231,20 +249,13 @@ class OpenVINORecognizer:
             bbox[[1, 3]] = np.clip((bbox[[1, 3]] - pad_y) / scale, 0, height)
             if bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
                 raise ValueError("YOLO target bbox has no area inside the original image")
-            crop = bbox.copy()
-            margin_x = (bbox[2] - bbox[0]) * self._crop_margin
-            margin_y = (bbox[3] - bbox[1]) * self._crop_margin
-            crop[[0, 2]] = np.clip(crop[[0, 2]] + (-margin_x, margin_x), 0, width)
-            crop[[1, 3]] = np.clip(crop[[1, 3]] + (-margin_y, margin_y), 0, height)
-            points, scores = self._predict_keypoints(image_bgr, crop)
-            detections.append(KeypointDetection(bbox, float(row[4]), points, scores, (height, width)))
-        return detections
+            yield bbox, float(row[4])
 
     def _predict_keypoints(self, image: ImageArray, bbox: FloatArray) -> tuple[FloatArray, FloatArray]:
         affine, inverse = _affine(bbox, self._input_size, self._padding)
         crop = cv2.warpAffine(
             image, affine, self._input_size, flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=(0.0, 0.0, 0.0),
         )
         normalized = (crop[..., ::-1].astype(np.float32) - _MEAN) / _STD
         blob = normalized.transpose(2, 0, 1)[None].astype(np.float32)

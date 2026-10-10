@@ -82,7 +82,7 @@ def main() -> int:
         return 2
 
     try:
-        from ultralytics import YOLO
+        from ultralytics.models.yolo.model import YOLO
     except ImportError as exc:
         print(
             "[export_openvino] ultralytics is not installed in this environment.\n"
@@ -95,7 +95,7 @@ def main() -> int:
     print(f"[export_openvino] Loading: {weights}")
     model = YOLO(str(weights))
 
-    export_kw: dict = {
+    export_kw: dict[str, str | int | bool] = {
         "format": "openvino",
         "imgsz": args.imgsz,
         "half": bool(args.half),

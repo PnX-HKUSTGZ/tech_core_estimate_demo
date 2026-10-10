@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
+from typing import cast
 
 import yaml
 
@@ -45,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def read_dataset_yaml(source_root: Path) -> dict:
+def read_dataset_yaml(source_root: Path) -> dict[str, object]:
     yaml_path = source_root / "dataset.yaml"
     if not yaml_path.is_file():
         raise FileNotFoundError(f"Missing dataset.yaml: {yaml_path}")
@@ -53,18 +54,21 @@ def read_dataset_yaml(source_root: Path) -> dict:
         data = yaml.safe_load(f) or {}
     if not isinstance(data, dict):
         raise ValueError(f"dataset.yaml must be a mapping: {yaml_path}")
-    return data
+    return cast(dict[str, object], data)
 
 
-def normalize_names(names) -> dict[int, str]:
+def normalize_names(names: object) -> dict[int, str]:
     if isinstance(names, list):
-        return {i: str(name) for i, name in enumerate(names)}
+        return {i: str(name) for i, name in enumerate(cast(list[object], names))}
     if isinstance(names, dict):
-        return {int(k): str(v) for k, v in names.items()}
+        values = cast(dict[int | str, object], names)
+        return {int(key): str(value) for key, value in values.items()}
     return {0: "object"}
 
 
-def build_class_map(source_names: dict[int, str], include_classes: list[int] | None):
+def build_class_map(
+    source_names: dict[int, str], include_classes: list[int] | None
+) -> tuple[dict[int, int], dict[int, str]]:
     if include_classes is None:
         kept = sorted(source_names)
     else:
@@ -144,7 +148,7 @@ def collect_images(source_root: Path, split: str) -> list[Path]:
 
 
 def write_dataset_yaml(output_root: Path, names: dict[int, str], has_test: bool) -> None:
-    cfg = {
+    cfg: dict[str, str | dict[int, str]] = {
         "path": str(output_root),
         "train": "images/train",
         "val": "images/val",

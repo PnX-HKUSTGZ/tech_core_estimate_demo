@@ -23,6 +23,8 @@ compose_dataset.py — Blender RGBA 合成图 → YOLO Pose 格式数据集
 
 """
 
+from __future__ import annotations
+
 import argparse
 import datetime
 import json
@@ -34,7 +36,37 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, TypeGuard, cast
+
+if TYPE_CHECKING or __package__:
+    from .schema import (
+        Background,
+        Color,
+        Crop,
+        CropGeometry,
+        DatasetAnnotations,
+        FloatImage,
+        FrameParameters,
+        ImageArray,
+        MaskArray,
+        PlacedInstance,
+        PlacedMask,
+    )
+else:
+    from schema import (
+        Background,
+        Color,
+        Crop,
+        CropGeometry,
+        DatasetAnnotations,
+        FloatImage,
+        FrameParameters,
+        ImageArray,
+        MaskArray,
+        PlacedInstance,
+        PlacedMask,
+    )
 
 import cv2
 import numpy as np
@@ -91,16 +123,16 @@ _OOV_COLOR = (100, 100, 100)  # 灰色 (视野外)
 
 
 def _draw_kp_set(
-    out,
-    kps_2d,
-    kps_vis,
-    colors,
-    radius,
-    thick,
-    edges=None,
-    bbox=None,
-    bbox_color=(80, 200, 80),
-):
+    out: ImageArray,
+    kps_2d: Sequence[Sequence[float]],
+    kps_vis: Sequence[int],
+    colors: Sequence[Color],
+    radius: int,
+    thick: int,
+    edges: Sequence[tuple[int, int]] | None = None,
+    bbox: Sequence[float] | None = None,
+    bbox_color: Color = (80, 200, 80),
+) -> None:
     """绘制一组关键点 + 可选连线 + bbox."""
     vis2 = {}
     for i, (kp, vis) in enumerate(zip(kps_2d, kps_vis)):
@@ -128,8 +160,11 @@ def _draw_kp_set(
 
 
 def draw_kp_vis(
-    img_bgr: np.ndarray, instances: list, pil_kp_names: list, exc_kp_names: list
-) -> np.ndarray:
+    img_bgr: ImageArray,
+    instances: Sequence[PlacedInstance],
+    pil_kp_names: Sequence[str],
+    exc_kp_names: Sequence[str],
+) -> ImageArray:
     """在 BGR 图像上绘制 pillar + exchange 关键点和 bbox.
 
     vis=2: 实心彩色圆  vis=1: 橙色空心圆+X  vis=0: 跳过
@@ -176,17 +211,26 @@ def draw_kp_vis(
 
 
 def _kps_to_yolo(
-    kps_2d: list, kps_vis: list, img_w: int, img_h: int, n_slots: int
-) -> list:
+    kps_2d: Sequence[Sequence[float]],
+    kps_vis: Sequence[int],
+    img_w: int,
+    img_h: int,
+    n_slots: int,
+) -> list[str]:
     """将关键点列表转换为 YOLO 格式的字符串片段, 不足 n_slots 的补 0 0 0."""
     parts = []
     for i in range(n_slots):
         # Alpha crops can exclude an occluded virtual point. Once placement
         # moves it outside the final canvas, its final label must be out-of-frame.
-        if (i < len(kps_2d) and i < len(kps_vis) and kps_vis[i] != 0
-                and 0 <= kps_2d[i][0] < img_w and 0 <= kps_2d[i][1] < img_h):
+        if (
+            i < len(kps_2d)
+            and i < len(kps_vis)
+            and kps_vis[i] != 0
+            and 0 <= kps_2d[i][0] < img_w
+            and 0 <= kps_2d[i][1] < img_h
+        ):
             parts.append(
-                f"{kps_2d[i][0]/img_w:.6f} {kps_2d[i][1]/img_h:.6f} {kps_vis[i]}"
+                f"{kps_2d[i][0] / img_w:.6f} {kps_2d[i][1] / img_h:.6f} {kps_vis[i]}"
             )
         else:
             parts.append("0.000000 0.000000 0")
@@ -195,7 +239,7 @@ def _kps_to_yolo(
 
 def write_yolo_label(
     path: Path,
-    instances: list,
+    instances: Sequence[PlacedInstance],
     img_w: int,
     img_h: int,
     n_pil_kps: int = 5,
@@ -210,7 +254,6 @@ def write_yolo_label(
     kpt_shape = [n_pil_kps + n_exc_kps, 3]
     vis: 0=视野外(占位 0 0 0)  1=遮挡  2=可见
     """
-    n_total = n_pil_kps + n_exc_kps
     pad_exc = ["0.000000 0.000000 0"] * n_exc_kps
     pad_pil = ["0.000000 0.000000 0"] * n_pil_kps
     lines = []
@@ -248,8 +291,8 @@ def write_yolo_label(
 
 
 def bbox_2d_from_kps_vis(
-    kps_2d: list,
-    kps_vis: list,
+    kps_2d: Sequence[Sequence[float]],
+    kps_vis: Sequence[int],
     img_w: int,
     img_h: int,
     margin: float = 2.0,
@@ -281,7 +324,7 @@ def bbox_2d_from_kps_vis(
     return [x0, y0, x1, y1]
 
 
-def _is_valid_bbox2d(bb) -> bool:
+def _is_valid_bbox2d(bb: object) -> TypeGuard[Sequence[float]]:
     return (
         isinstance(bb, (list, tuple))
         and len(bb) == 4
@@ -289,7 +332,7 @@ def _is_valid_bbox2d(bb) -> bool:
     )
 
 
-def _pillar_bbox_for_crop(ann: dict, cw: int, ch: int) -> list[float]:
+def _pillar_bbox_for_crop(ann: CropGeometry, cw: int, ch: int) -> list[float]:
     """装配柱 crop 坐标下的 bbox，处理 Blender 写出的 null 值."""
     bb = ann.get("bbox_2d")
     if _is_valid_bbox2d(bb):
@@ -299,7 +342,7 @@ def _pillar_bbox_for_crop(ann: dict, cw: int, ch: int) -> list[float]:
     return bbox_2d_from_kps_vis(kps, vis, cw, ch)
 
 
-def _exchange_bbox_for_crop(ann: dict, cw: int, ch: int) -> list[float]:
+def _exchange_bbox_for_crop(ann: CropGeometry, cw: int, ch: int) -> list[float]:
     """exchange crop 坐标下的 bbox; 缺省则用 exchange 关键点或退回 pillar bbox."""
     for key in ("exc_bbox_2d", "bbox_2d_exchange"):
         bb = ann.get(key)
@@ -321,7 +364,7 @@ def _exchange_bbox_for_crop(ann: dict, cw: int, ch: int) -> list[float]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def masked_luma_from_rgba(crop_rgba: np.ndarray) -> float:
+def masked_luma_from_rgba(crop_rgba: ImageArray) -> float:
     """前景区域归一化 luma 均值 [0,1]."""
     alpha = crop_rgba[..., 3].astype(np.float32) / 255.0
     fg_mask = alpha > ALPHA_THRESH
@@ -333,7 +376,7 @@ def masked_luma_from_rgba(crop_rgba: np.ndarray) -> float:
     )
 
 
-def alpha_auto_crop(item: dict) -> dict:
+def alpha_auto_crop(item: Crop) -> Crop:
     """根据 alpha > ALPHA_THRESH 区域自动裁剪 RGBA 图像，并同步偏移所有像素坐标。
 
     修改 item 中的：
@@ -365,23 +408,25 @@ def alpha_auto_crop(item: dict) -> dict:
     item["kps_2d"] = [[kp[0] - dx, kp[1] - dy] for kp in item["kps_2d"]]
 
     # 偏移 bbox
-    if item.get("bbox_2d") is not None:
-        bx0, by0, bx1, by1 = item["bbox_2d"]
+    bbox = item.get("bbox_2d")
+    if bbox is not None:
+        bx0, by0, bx1, by1 = bbox
         item["bbox_2d"] = [bx0 - dx, by0 - dy, bx1 - dx, by1 - dy]
 
     # 偏移 exchange 关键点
     if "exc_kps_2d" in item:
         item["exc_kps_2d"] = [[kp[0] - dx, kp[1] - dy] for kp in item["exc_kps_2d"]]
-    if "exc_bbox_2d" in item:
-        ex0, ey0, ex1, ey1 = item["exc_bbox_2d"]
+    exc_bbox = item.get("exc_bbox_2d")
+    if exc_bbox is not None:
+        ex0, ey0, ex1, ey1 = exc_bbox
         item["exc_bbox_2d"] = [ex0 - dx, ey0 - dy, ex1 - dx, ey1 - dy]
 
     return item
 
 
 def luma_align(
-    crop_rgb: np.ndarray, alpha: np.ndarray, bg_region: np.ndarray
-) -> np.ndarray:
+    crop_rgb: ImageArray, alpha: FloatImage, bg_region: ImageArray
+) -> ImageArray:
     """残差式 L 通道对齐 (仅 --residual_luma_align 时调用)."""
     fg_mask = alpha > ALPHA_THRESH
     if fg_mask.sum() == 0:
@@ -393,7 +438,7 @@ def luma_align(
     if mean_cL < 1e-3:
         return crop_rgb
     crop_lab[..., 0] = np.clip(crop_lab[..., 0] * (mean_bL / mean_cL), 0, 100)
-    return cv2.cvtColor(crop_lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+    return cast(ImageArray, cv2.cvtColor(crop_lab.astype(np.uint8), cv2.COLOR_LAB2RGB))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -401,7 +446,7 @@ def luma_align(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def build_bg_pool(bg_dir: Path, n_bins: int = 10) -> list:
+def build_bg_pool(bg_dir: Path, n_bins: int = 10) -> list[Background]:
     """扫描 bg_dir 下图片, 计算并缓存 luma, 返回按 luma 排序的列表."""
     paths = [
         p for p in bg_dir.rglob("*") if p.is_file() and p.suffix in SUPPORTED_IMAGE_EXTS
@@ -410,10 +455,10 @@ def build_bg_pool(bg_dir: Path, n_bins: int = 10) -> list:
         return []
 
     cache_path = bg_dir / ".luma_cache.json"
-    luma_cache = {}
+    luma_cache: dict[str, float] = {}
     if cache_path.exists():
         try:
-            luma_cache = json.loads(cache_path.read_text())
+            luma_cache = cast(dict[str, float], json.loads(cache_path.read_text()))
         except Exception:
             pass
 
@@ -436,7 +481,7 @@ def build_bg_pool(bg_dir: Path, n_bins: int = 10) -> list:
         dirty = True
 
     print(
-        f"[build_bg_pool] {n_cached} 缓存 / {len(paths)-n_cached} 新计算 ({time.time()-t0:.1f}s)"
+        f"[build_bg_pool] {n_cached} 缓存 / {len(paths) - n_cached} 新计算 ({time.time() - t0:.1f}s)"
     )
     if dirty:
         try:
@@ -456,12 +501,12 @@ def build_bg_pool(bg_dir: Path, n_bins: int = 10) -> list:
 
 
 def select_bg(
-    bg_pool: list,
+    bg_pool: Sequence[Background],
     target: float,
     rng: random.Random,
     thresh: float = 0.08,
     max_expand: int = 6,
-) -> Optional[dict]:
+) -> Background | None:
     """按亮度匹配背景图, 逐步扩大阈值, 最终 fallback 最近 luma."""
     if not bg_pool:
         return None
@@ -474,7 +519,7 @@ def select_bg(
     return min(bg_pool, key=lambda x: abs(x["luma"] - target))
 
 
-def make_fallback_bg(w: int, h: int, rng: random.Random) -> np.ndarray:
+def make_fallback_bg(w: int, h: int, rng: random.Random) -> ImageArray:
     """随机灰度纯色背景."""
     return np.full((h, w, 3), rng.randint(30, 200), dtype=np.uint8)
 
@@ -485,13 +530,13 @@ def make_fallback_bg(w: int, h: int, rng: random.Random) -> np.ndarray:
 
 
 def adaptive_bg_size(
-    crops: list,
+    crops: Sequence[Crop],
     rng: random.Random,
-    frac_range: tuple = (0.20, 0.50),
+    frac_range: tuple[float, float] = (0.20, 0.50),
     aspect: float = 4 / 3,
-    min_wh: tuple = (320, 240),
-    max_wh: tuple = (1280, 960),
-) -> tuple:
+    min_wh: tuple[int, int] = (320, 240),
+    max_wh: tuple[int, int] = (1280, 960),
+) -> tuple[int, int]:
     """让最大 crop 前景面积占背景总面积的 frac_range 随机比例.
     背景宽高比 aspect, 对齐 32px, 并保证能容纳最大 crop.
     """
@@ -522,7 +567,7 @@ def adaptive_bg_size(
 
 
 def mask_overlap_ratio(
-    mask_a: np.ndarray, off_a: tuple, mask_b: np.ndarray, off_b: tuple
+    mask_a: MaskArray, off_a: tuple[int, int], mask_b: MaskArray, off_b: tuple[int, int]
 ) -> float:
     """inter / min(area_a, area_b) — 比 IoU 更敏感的小目标遮挡指标."""
     ax, ay = off_a
@@ -547,10 +592,10 @@ def mask_overlap_ratio(
 
 
 def place_pillar(
-    ann: dict,
-    composite: np.ndarray,
-    instances: list,
-    placed_masks: list,
+    ann: Crop,
+    composite: ImageArray,
+    instances: list[PlacedInstance],
+    placed_masks: list[PlacedMask],
     rng: random.Random,
     max_attempts: int,
     max_overlap_ratio: float,
@@ -643,7 +688,7 @@ def place_pillar(
 
         # ── 记录新实例 ──
         bx0, by0, bx1, by1 = _pillar_bbox_for_crop(ann, cw, ch)
-        inst = {
+        inst: PlacedInstance = {
             "kps_2d": [[kp[0] + ox, kp[1] + oy] for kp in ann["kps_2d"]],
             "kps_vis": list(ann.get("kps_vis", [2] * len(ann["kps_2d"]))),
             "bbox": [bx0 + ox, by0 + oy, bx1 + ox, by1 + oy],
@@ -672,10 +717,10 @@ def place_pillar(
 
 def _load_blender_dir(
     blender_dir: Path,
-    kp_names_ref: Optional[list] = None,
-    exc_kp_names_ref: Optional[list] = None,
+    kp_names_ref: list[str] | None = None,
+    exc_kp_names_ref: list[str] | None = None,
     auto_crop_alpha: bool = False,
-) -> tuple:
+) -> tuple[list[Crop], list[str], list[str], bool]:
     """加载单个 blender_dir 的标注和 RGBA crop.
 
     返回: (crop_pool, kp_names, exc_kp_names, has_exchange)
@@ -686,13 +731,13 @@ def _load_blender_dir(
         print(f"[WARN] 找不到 {ann_path}, 跳过")
         return [], kp_names_ref or [], exc_kp_names_ref or [], bool(exc_kp_names_ref)
 
-    data = json.loads(ann_path.read_text(encoding="utf-8"))
+    data = cast(DatasetAnnotations, json.loads(ann_path.read_text(encoding="utf-8")))
     kp_names = data.get("keypoint_names", [])
     n_kps = len(kp_names)
 
     # 检测 exchange target
     targets_meta = data.get("targets", [])
-    exc_kp_names: list = []
+    exc_kp_names: list[str] = []
     has_exchange = False
     if isinstance(targets_meta, list):
         for tgt_meta in targets_meta:
@@ -734,7 +779,8 @@ def _load_blender_dir(
         + (f", exchange {len(exc_kp_names)} kp" if has_exchange else "")
     )
 
-    crop_pool, n_skip = [], 0
+    crop_pool: list[Crop] = []
+    n_skip = 0
     t0 = time.time()
     for ann in tqdm(
         data["images"],
@@ -744,13 +790,15 @@ def _load_blender_dir(
         leave=False,
     ):
         img_path = blender_dir / "images" / ann["file_name"]
-        crop_rgba = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
+        crop_rgba = cast(
+            ImageArray | None, cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
+        )
         if crop_rgba is None or crop_rgba.ndim < 3:
             tqdm.write(f"  [WARN] 跳过: {img_path}")
             n_skip += 1
             continue
         if crop_rgba.shape[2] == 4:
-            crop_rgba = cv2.cvtColor(crop_rgba, cv2.COLOR_BGRA2RGBA)
+            crop_rgba = cast(ImageArray, cv2.cvtColor(crop_rgba, cv2.COLOR_BGRA2RGBA))
         else:
             alpha_ch = np.full(crop_rgba.shape[:2], 255, dtype=np.uint8)
             crop_rgba = np.dstack(
@@ -764,7 +812,7 @@ def _load_blender_dir(
             {"bbox_2d": ann.get("bbox_2d"), "kps_2d": kps, "kps_vis": kps_vis}, bw, bh
         )
 
-        item = {
+        item: Crop = {
             "rgba": crop_rgba,
             "kps_2d": kps,
             "kps_vis": kps_vis,
@@ -772,8 +820,9 @@ def _load_blender_dir(
             "file_name": ann["file_name"],
             "material_luma": masked_luma_from_rgba(crop_rgba),
         }
-        if _is_valid_bbox2d(ann.get("bbox_2d_exchange")):
-            item["bbox_2d_exchange"] = [float(v) for v in ann["bbox_2d_exchange"]]
+        exchange_bbox = ann.get("bbox_2d_exchange")
+        if _is_valid_bbox2d(exchange_bbox):
+            item["bbox_2d_exchange"] = [float(v) for v in exchange_bbox]
 
         if has_exchange:
             exc_found = False
@@ -803,7 +852,9 @@ def _load_blender_dir(
 
         crop_pool.append(item)
 
-    print(f"  \u2192 {len(crop_pool)} \u52a0\u8f7d (\u8df3\u8fc7 {n_skip}), \u8017\u65f6 {time.time()-t0:.1f}s")
+    print(
+        f"  \u2192 {len(crop_pool)} \u52a0\u8f7d (\u8df3\u8fc7 {n_skip}), \u8017\u65f6 {time.time() - t0:.1f}s"
+    )
     return crop_pool, kp_names, exc_kp_names, has_exchange
 
 
@@ -812,7 +863,7 @@ def _load_blender_dir(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Blender RGBA → YOLO Pose 数据集合成")
     parser.add_argument(
         "--blender_dir",
@@ -888,10 +939,7 @@ def main():
     if not all_blender_dirs:
         sys.exit("[ERROR] 至少指定 --blender_dir 或 --blender_dirs 之一")
     # 去重同时保持顺序
-    seen: set = set()
-    all_blender_dirs = [
-        d for d in all_blender_dirs if not (str(d) in seen or seen.add(str(d)))
-    ]  # type: ignore[func-returns-value]
+    all_blender_dirs = list(dict.fromkeys(all_blender_dirs))
 
     multi_dir = len(all_blender_dirs) > 1
     print(
@@ -919,9 +967,9 @@ def main():
         bg_w_fixed, bg_h_fixed = (int(v) for v in args.bg_size.split("x"))
 
     # ── 逐目录加载标注 + crop ──
-    crop_pool: list = []
-    kp_names: list = []
-    exc_kp_names: list = []
+    crop_pool: list[Crop] = []
+    kp_names: list[str] = []
+    exc_kp_names: list[str] = []
     has_exchange: bool = False
     t0_total = time.time()
     for bdir in all_blender_dirs:
@@ -942,7 +990,7 @@ def main():
     n_kps = len(kp_names)
     lumas = [c["material_luma"] for c in crop_pool]
     print(
-        f"[compose] 合并 crop 池: {len(crop_pool)} 张, 耗时 {time.time()-t0_total:.1f}s"
+        f"[compose] 合并 crop 池: {len(crop_pool)} 张, 耗时 {time.time() - t0_total:.1f}s"
     )
     if lumas:
         print(
@@ -975,7 +1023,7 @@ def main():
     val_set = set(range(n_val))
     bg_str = "auto(4:3,20%~50%)" if use_auto_bg else f"{bg_w_fixed}x{bg_h_fixed}"
     print(
-        f"[compose] 输出 {n_output} 帧 (train={n_output-n_val}, val={n_val}), "
+        f"[compose] 输出 {n_output} 帧 (train={n_output - n_val}, val={n_val}), "
         f"pillar/image={args.min_pillars}~{args.max_pillars}, bg={bg_str}, "
         f"attempts={args.placement_attempts}, "
         f"max_overlap={args.max_mask_overlap_ratio}, "
@@ -984,7 +1032,7 @@ def main():
     )
 
     # ── 预生成每帧参数 (用主 rng, 保证 crop 选取可复现) ──
-    frame_params = []
+    frame_params: list[FrameParameters] = []
     for frame_idx in range(n_output):
         selected = [
             rng.choice(crop_pool)
@@ -1003,7 +1051,7 @@ def main():
     _skipped_lock = threading.Lock()
     _skipped_total = [0]  # 用列表使闭包可写
 
-    def _process_frame(fp: dict) -> None:
+    def _process_frame(fp: FrameParameters) -> None:
         frame_idx = fp["frame_idx"]
         selected = fp["selected"]
         split = fp["split"]
@@ -1020,20 +1068,24 @@ def main():
 
         if bg_pool:
             item = select_bg(bg_pool, target_luma, frng, args.bg_luma_thresh)
-            bg_img = cv2.imread(str(item["path"]))
+            assert item is not None  # A non-empty pool always yields a background.
+            bg_img = cast(ImageArray | None, cv2.imread(str(item["path"])))
             if bg_img is None:
                 bg_img = make_fallback_bg(bg_w, bg_h, frng)
             else:
-                bg_img = cv2.cvtColor(
-                    cv2.resize(bg_img, (bg_w, bg_h), interpolation=cv2.INTER_AREA),
-                    cv2.COLOR_BGR2RGB,
+                bg_img = cast(
+                    ImageArray,
+                    cv2.cvtColor(
+                        cv2.resize(bg_img, (bg_w, bg_h), interpolation=cv2.INTER_AREA),
+                        cv2.COLOR_BGR2RGB,
+                    ),
                 )
         else:
             bg_img = make_fallback_bg(bg_w, bg_h, frng)
 
         composite = bg_img.copy()
-        placed_masks = []
-        instances = []
+        placed_masks: list[PlacedMask] = []
+        instances: list[PlacedInstance] = []
         local_skip = 0
 
         for ann in selected:
@@ -1070,7 +1122,7 @@ def main():
             cv2.imwrite(
                 str(vis_dir / f"{stem}.jpg"),
                 draw_kp_vis(
-                    cv2.cvtColor(composite, cv2.COLOR_RGB2BGR),
+                    cast(ImageArray, cv2.cvtColor(composite, cv2.COLOR_RGB2BGR)),
                     instances,
                     kp_names,
                     exc_kp_names,

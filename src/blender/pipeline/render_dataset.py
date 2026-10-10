@@ -14,6 +14,9 @@ render_dataset.py — 固定相机 + 物体变换合成数据生成
     config.yaml      配置副本
     meta.json        运行参数
 """
+
+from __future__ import annotations
+
 import argparse
 import datetime
 import json
@@ -24,6 +27,7 @@ import subprocess
 import sys
 import numpy as np
 import bpy
+from typing import cast
 
 # ─────────────────────────────────────────────────
 #  路径 & 导入
@@ -34,6 +38,20 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 if _SCRIPT_PARENT not in sys.path:
     sys.path.insert(0, _SCRIPT_PARENT)
+
+
+from pipeline.schema import (
+    ImageAnnotation,
+    Metadata,
+    PipelineConfig,
+    ProjectedKeypoints,
+    FloatArray,
+)
+from pipeline.render_helpers import (
+    _add_target_mask_output,
+    _process_segmaps,
+    _resolve_mesh_objects,
+)
 
 
 _PCI_BUS_RE = re.compile(
@@ -75,11 +93,15 @@ def _target_gpu_pci_key(gpu_uuid: str) -> tuple[int, int, int]:
         if fields[0].strip().lower() == gpu_uuid.lower():
             matching_buses.append(fields[1].strip())
     if len(matching_buses) != 1:
-        raise RuntimeError(f"GPU UUID {gpu_uuid} matched {len(matching_buses)} physical devices")
+        raise RuntimeError(
+            f"GPU UUID {gpu_uuid} matched {len(matching_buses)} physical devices"
+        )
     return _pci_key(matching_buses[0])
 
 
-def _select_cycles_device(scene: bpy.types.Scene, render_device: str, gpu_uuid: str | None) -> None:
+def _select_cycles_device(
+    scene: bpy.types.Scene, render_device: str, gpu_uuid: str | None
+) -> None:
     """Select one physical OptiX GPU, or force Cycles onto the CPU."""
     if render_device == "CPU":
         if gpu_uuid is not None:
@@ -108,7 +130,8 @@ def _select_cycles_device(scene: bpy.types.Scene, render_device: str, gpu_uuid: 
     for device in devices:
         device.use = False
     matching_devices = [
-        device for device in devices
+        device
+        for device in devices
         if device.type == "OPTIX" and _pci_key(str(device.id)) == target_pci
     ]
     if len(matching_devices) != 1:
@@ -121,13 +144,15 @@ def _select_cycles_device(scene: bpy.types.Scene, render_device: str, gpu_uuid: 
     if [device for device in devices if device.use] != [selected]:
         raise RuntimeError("Cycles device selection did not isolate one OptiX GPU")
     scene.cycles.device = "GPU"
-    print(f"[render] Cycles device: GPU uuid={gpu_uuid} PCI={target_pci} OptiX id={selected.id}")
+    print(
+        f"[render] Cycles device: GPU uuid={gpu_uuid} PCI={target_pci} OptiX id={selected.id}"
+    )
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if argv is None:
         argv = sys.argv
-        argv = argv[argv.index("--") + 1:] if "--" in argv else []
+        argv = argv[argv.index("--") + 1 :] if "--" in argv else []
 
     parser = argparse.ArgumentParser(description="固定相机 + 物体变换 合成数据生成")
     parser.add_argument("--config", type=str, default="../configs/example.yaml")
@@ -137,10 +162,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--samples", type=int, default=None)
     parser.add_argument("--width", type=int, default=None)
     parser.add_argument("--height", type=int, default=None)
-    parser.add_argument("--device", choices=["CPU", "GPU"], default=None,
-                        help="覆盖 config.render.device；GPU 必须同时指定 --gpu_uuid")
-    parser.add_argument("--gpu_uuid", type=str, default=None,
-                        help="单卡 OptiX 渲染使用的物理 GPU UUID")
+    parser.add_argument(
+        "--device",
+        choices=["CPU", "GPU"],
+        default=None,
+        help="覆盖 config.render.device；GPU 必须同时指定 --gpu_uuid",
+    )
+    parser.add_argument(
+        "--gpu_uuid", type=str, default=None, help="单卡 OptiX 渲染使用的物理 GPU UUID"
+    )
     parser.add_argument(
         "--light_type",
         type=str,
@@ -189,7 +219,7 @@ def main(argv: list[str] | None = None) -> None:
         config_path = cwd_config if os.path.isfile(cwd_config) else script_config
     config_path = os.path.abspath(config_path)
     with open(config_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+        cfg = cast(PipelineConfig, yaml.safe_load(f))
 
     if args.samples is not None:
         cfg["render"]["samples"] = args.samples
@@ -230,9 +260,8 @@ def main(argv: list[str] | None = None) -> None:
     # ─────────────────────────────────────────────────
     total = args.n_images
     shard_size = total // args.n_shards
-    start_idx  = args.shard_id * shard_size
-    end_idx    = (start_idx + shard_size
-                  if args.shard_id < args.n_shards - 1 else total)
+    start_idx = args.shard_id * shard_size
+    end_idx = start_idx + shard_size if args.shard_id < args.n_shards - 1 else total
     n_this_shard = end_idx - start_idx
 
     # ─────────────────────────────────────────────────
@@ -242,35 +271,35 @@ def main(argv: list[str] | None = None) -> None:
     random.seed(shard_seed)
     np.random.seed(shard_seed)
 
-    run_meta = {
-        "timestamp":   datetime.datetime.now().isoformat(),
-        "seed":        args.seed,
-        "shard_seed":  shard_seed,
-        "shard_id":    args.shard_id,
-        "n_shards":    args.n_shards,
-        "n_images":    args.n_images,
+    run_meta: Metadata = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "seed": args.seed,
+        "shard_seed": shard_seed,
+        "shard_id": args.shard_id,
+        "n_shards": args.n_shards,
+        "n_images": args.n_images,
         "render_device": render_device,
-        "gpu_uuid":    args.gpu_uuid,
-        "light_type":  light_type,
+        "gpu_uuid": args.gpu_uuid,
+        "light_type": light_type,
         "strip_light_color": strip_light_color,
         "strip_light_strength": strip_light_strength,
         "strip_light_on_prob": strip_light_on_prob,
         "config_file": os.path.basename(config_path),
-        "pipeline":    "pipeline (fixed camera + object transform)",
+        "pipeline": "pipeline (fixed camera + object transform)",
     }
     # ─────────────────────────────────────────────────
     #  Blender 场景配置
     # ─────────────────────────────────────────────────
     scene = bpy.context.scene
-    scene.render.engine               = cfg["render"].get("engine", "CYCLES")
-    scene.render.resolution_x         = render_w
-    scene.render.resolution_y         = render_h
+    scene.render.engine = cfg["render"].get("engine", "CYCLES")
+    scene.render.resolution_x = render_w
+    scene.render.resolution_y = render_h
     scene.render.resolution_percentage = 100
-    scene.cycles.samples              = cfg["render"]["samples"]
-    scene.cycles.use_denoising        = cfg["render"].get("use_denoising", True)
+    scene.cycles.samples = cfg["render"]["samples"]
+    scene.cycles.use_denoising = cfg["render"].get("use_denoising", True)
     scene.render.image_settings.file_format = "PNG"
-    scene.render.film_transparent     = True
-    scene.render.image_settings.color_mode  = "RGBA"
+    scene.render.film_transparent = True
+    scene.render.image_settings.color_mode = "RGBA"
 
     _select_cycles_device(scene, render_device, args.gpu_uuid)
 
@@ -279,58 +308,49 @@ def main(argv: list[str] | None = None) -> None:
     with open(os.path.join(args.output_dir, "config.yaml"), "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
     if args.shard_id == 0:
-        with open(os.path.join(args.output_dir, "meta.json"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(args.output_dir, "meta.json"), "w", encoding="utf-8"
+        ) as f:
             json.dump(run_meta, f, indent=2, ensure_ascii=False)
 
     # ── 相机 ──
     if "RenderCam" not in bpy.data.objects:
         cam_data = bpy.data.cameras.new("RenderCam")
-        cam_obj  = bpy.data.objects.new("RenderCam", cam_data)
+        cam_obj = bpy.data.objects.new("RenderCam", cam_data)
         scene.collection.objects.link(cam_obj)
     else:
-        cam_obj  = bpy.data.objects["RenderCam"]
+        cam_obj = bpy.data.objects["RenderCam"]
         cam_data = cam_obj.data
 
-    scene.camera         = cam_obj
-    cam_data.type        = "PERSP"
+    scene.camera = cam_obj
+    cam_data.type = "PERSP"
     cam_data.sensor_width = cfg["render"].get("sensor_width_mm", 36.0)
 
     # ─────────────────────────────────────────────────
     #  Segmap: Object Index Pass
     # ─────────────────────────────────────────────────
-    import fnmatch
-
-    def _resolve_mesh_objects(mesh_cfg, all_objects):
-        if isinstance(mesh_cfg, dict):
-            includes = mesh_cfg.get("include", [])
-            excludes = mesh_cfg.get("exclude", [])
-        else:
-            includes = mesh_cfg if mesh_cfg else []
-            excludes = []
-        matched = set()
-        for pat in includes:
-            for obj in all_objects:
-                if obj.type == "MESH" and fnmatch.fnmatch(obj.name, pat):
-                    matched.add(obj)
-        for pat in excludes:
-            for obj in list(matched):
-                if fnmatch.fnmatch(obj.name, pat):
-                    matched.discard(obj)
-        return matched
 
     _targets_cfg = cfg.get("targets", [])
-    _segmap_dir  = os.path.join(args.output_dir, "images")
+    _segmap_dir = os.path.join(args.output_dir, "images")
 
     _all_blender_objects = list(bpy.data.objects)
     for tgt in reversed(_targets_cfg):
         tgt_pass = tgt["pass_index"]
-        tgt_objs = _resolve_mesh_objects(tgt.get("mesh_objects", []), _all_blender_objects)
+        tgt_objs = _resolve_mesh_objects(
+            tgt.get("mesh_objects", []), _all_blender_objects
+        )
         for obj in tgt_objs:
             obj.pass_index = tgt_pass
     for tgt in _targets_cfg:
         tgt_pass = tgt["pass_index"]
-        tgt_objs = [o for o in _all_blender_objects if o.type == "MESH" and o.pass_index == tgt_pass]
-        sys.stdout.write(f"[render] target '{tgt['name']}': {len(tgt_objs)} mesh → pass_index={tgt_pass}\n")
+        assigned_objects = [
+            o
+            for o in _all_blender_objects
+            if o.type == "MESH" and o.pass_index == tgt_pass
+        ]
+        sys.stdout.write(
+            f"[render] target '{tgt['name']}': {len(assigned_objects)} mesh → pass_index={tgt_pass}\n"
+        )
 
     view_layer = scene.view_layers[0]
     view_layer.use_pass_object_index = True
@@ -338,38 +358,20 @@ def main(argv: list[str] | None = None) -> None:
     scene.use_nodes = True
     _comp_tree = scene.node_tree
     _comp_tree.nodes.clear()
-    _rl_node   = _comp_tree.nodes.new("CompositorNodeRLayers")
+    _rl_node = _comp_tree.nodes.new("CompositorNodeRLayers")
     _comp_node = _comp_tree.nodes.new("CompositorNodeComposite")
     _comp_tree.links.new(_rl_node.outputs["Image"], _comp_node.inputs["Image"])
-
-    def _add_target_mask_output(tree, rl_node, pass_index_val, output_dir, slot_prefix):
-        gt = tree.nodes.new("CompositorNodeMath")
-        gt.operation = "GREATER_THAN"
-        gt.inputs[1].default_value = pass_index_val - 0.5
-        tree.links.new(rl_node.outputs["IndexOB"], gt.inputs[0])
-        lt = tree.nodes.new("CompositorNodeMath")
-        lt.operation = "LESS_THAN"
-        lt.inputs[1].default_value = pass_index_val + 0.5
-        tree.links.new(rl_node.outputs["IndexOB"], lt.inputs[0])
-        mul = tree.nodes.new("CompositorNodeMath")
-        mul.operation = "MULTIPLY"
-        tree.links.new(gt.outputs[0], mul.inputs[0])
-        tree.links.new(lt.outputs[0], mul.inputs[1])
-        fo = tree.nodes.new("CompositorNodeOutputFile")
-        fo.base_path = output_dir
-        fo.file_slots[0].path = slot_prefix
-        fo.format.file_format = "PNG"
-        fo.format.color_mode  = "BW"
-        fo.format.color_depth = "8"
-        tree.links.new(mul.outputs[0], fo.inputs[0])
-        return fo
 
     _target_seg_nodes = {}
     for tgt in _targets_cfg:
         _prefix = f"seg_{tgt['name']}_"
-        _fo = _add_target_mask_output(_comp_tree, _rl_node, tgt["pass_index"], _segmap_dir, _prefix)
+        _fo = _add_target_mask_output(
+            _comp_tree, _rl_node, tgt["pass_index"], _segmap_dir, _prefix
+        )
         _target_seg_nodes[tgt["name"]] = (_fo, _prefix)
-        sys.stdout.write(f"[render] compositor: target '{tgt['name']}' → {_prefix}<frame>.png\n")
+        sys.stdout.write(
+            f"[render] compositor: target '{tgt['name']}' → {_prefix}<frame>.png\n"
+        )
 
     # ─────────────────────────────────────────────────
     #  构建渲染操作
@@ -382,7 +384,6 @@ def main(argv: list[str] | None = None) -> None:
         blender_cam_to_opencv,
         check_occlusion_raycasts,
     )
-    import cv2 as _cv2_seg
 
     pre_render_ops, post_render_ops, _scene_cfg = build_ops(cfg)
 
@@ -390,53 +391,17 @@ def main(argv: list[str] | None = None) -> None:
     _min_visible_cfg = cfg.get("min_visible", {})
     _occlusion_offset = cfg.get("occlusion_offset_m", 0.001)
 
-    sys.stdout.write(f"[render] pipeline: {len(pre_render_ops)} pre-render ops, "
-                     f"{len(post_render_ops)} post-render ops\n")
+    sys.stdout.write(
+        f"[render] pipeline: {len(pre_render_ops)} pre-render ops, "
+        f"{len(post_render_ops)} post-render ops\n"
+    )
     sys.stdout.write(f"[render] min_visible: {_min_visible_cfg}\n")
-
-    # ─────────────────────────────────────────────────
-    #  Segmap → bbox 处理
-    # ─────────────────────────────────────────────────
-
-    def _process_segmaps(seg_frame_str, target_seg_nodes, targets_cfg, segmap_dir,
-                         W, H):
-        """从 segmap 提取每个 target 的 bbox. 返回 dict 或 None (有 target 缺 bbox 则返回 None)."""
-        target_bboxes = {}
-        for tgt_name, (fo_node, prefix) in target_seg_nodes.items():
-            seg_path = os.path.join(segmap_dir, f"{prefix}{seg_frame_str}.png")
-            if os.path.exists(seg_path):
-                seg_img = _cv2_seg.imread(seg_path, _cv2_seg.IMREAD_GRAYSCALE)
-                if seg_img is not None:
-                    ys, xs = np.where(seg_img > 0)
-                    if len(xs) > 0:
-                        target_bboxes[tgt_name] = [
-                            int(xs.min()), int(ys.min()),
-                            int(xs.max()), int(ys.max())]
-                os.remove(seg_path)
-
-        for tgt in targets_cfg:
-            union_names = tgt.get("bbox_from_targets")
-            if not union_names:
-                continue
-            constituent = [target_bboxes[n] for n in union_names if n in target_bboxes]
-            if constituent:
-                target_bboxes[tgt["name"]] = [
-                    min(b[0] for b in constituent), min(b[1] for b in constituent),
-                    max(b[2] for b in constituent), max(b[3] for b in constituent)]
-
-        targets_ann = {}
-        for tgt in targets_cfg:
-            bb = target_bboxes.get(tgt["name"])
-            if bb is None:
-                return None
-            targets_ann[tgt["name"]] = {"bbox_2d": bb}
-        return targets_ann
-
 
     # ─────────────────────────────────────────────────
     #  主循环
     # ─────────────────────────────────────────────────
-    annotations = []
+    annotations: list[ImageAnnotation] = []
+    primary_kp_names: list[str] | None = None
     idx = start_idx
 
     while idx < end_idx:
@@ -447,12 +412,24 @@ def main(argv: list[str] | None = None) -> None:
         for op in pre_render_ops:
             op(ctx)
 
+        if (
+            ctx.K is None
+            or ctx.R_w2c is None
+            or ctx.t_w2c is None
+            or ctx.cam_pos is None
+        ):
+            raise RuntimeError(
+                "Camera parameters were not initialized by pre-render operations"
+            )
+
         # ctx.kp_3d_frame 由 ObjectTransformOp 写入: {tgt_name: [np.array, ...]}
         kp_3d_frame = ctx.kp_3d_frame or {}
 
         # ── 对每个 target 做遮挡预检 ──
         precheck_ok = True
-        all_kps_2d = {}
+        all_kps_2d: dict[
+            str, tuple[list[str], ProjectedKeypoints, list[FloatArray]]
+        ] = {}
 
         for tgt in _targets_cfg:
             tgt_name = tgt["name"]
@@ -462,23 +439,28 @@ def main(argv: list[str] | None = None) -> None:
 
             kp_names_t = list(tgt.get("keypoints", {}).keys())
             kps_2d = project_keypoints(
-                kps_3d, ctx.K, ctx.R_w2c, ctx.t_w2c, ctx.render_w, ctx.render_h)
+                kps_3d, ctx.K, ctx.R_w2c, ctx.t_w2c, ctx.render_w, ctx.render_h
+            )
 
             oob = get_out_of_view_kps(kp_names_t, kps_2d)
             if oob:
-                print(f"[render] frame {idx}: {tgt_name} kps out of view {oob}, retrying...")
+                print(
+                    f"[render] frame {idx}: {tgt_name} kps out of view {oob}, retrying..."
+                )
                 precheck_ok = False
                 break
 
             check_occlusion_raycasts(
-                kps_2d, kps_3d, ctx.cam_pos,
-                scene=scene, offset_m=_occlusion_offset)
+                kps_2d, kps_3d, ctx.cam_pos, scene=scene, offset_m=_occlusion_offset
+            )
 
             min_vis = _min_visible_cfg.get(tgt_name, tgt.get("min_visible", 2))
             n_vis = sum(1 for kp in kps_2d if kp[2] == 2)
             if n_vis < min_vis:
-                print(f"[render] frame {idx}: {tgt_name} only {n_vis}/{len(kps_3d)} visible "
-                      f"(min={min_vis}), retrying...")
+                print(
+                    f"[render] frame {idx}: {tgt_name} only {n_vis}/{len(kps_3d)} visible "
+                    f"(min={min_vis}), retrying..."
+                )
                 precheck_ok = False
                 break
 
@@ -500,17 +482,22 @@ def main(argv: list[str] | None = None) -> None:
         # ── 渲染后同步 ──
         ctx.K = get_camera_K(cam_data, scene)
         ctx.R_w2c, ctx.t_w2c = blender_cam_to_opencv(cam_obj)
-        ctx.cam_pos = (-ctx.R_w2c.T @ ctx.t_w2c)
+        ctx.cam_pos = -ctx.R_w2c.T @ ctx.t_w2c
 
         # ── segmap → bbox ──
         seg_frame_str = str(idx).zfill(4)
         targets_ann = _process_segmaps(
-            seg_frame_str, _target_seg_nodes, _targets_cfg,
-            _segmap_dir, ctx.render_w, ctx.render_h)
+            seg_frame_str,
+            _target_seg_nodes,
+            _targets_cfg,
+            _segmap_dir,
+        )
 
         if targets_ann is None:
-            print(f"[render] frame {idx}: segmap bbox missing for some target, "
-                  f"discarding frame and retrying...")
+            print(
+                f"[render] frame {idx}: segmap bbox missing for some target, "
+                f"discarding frame and retrying..."
+            )
             if os.path.exists(img_path):
                 os.remove(img_path)
             for op in pre_render_ops + post_render_ops:
@@ -526,7 +513,8 @@ def main(argv: list[str] | None = None) -> None:
             # 渲染后重投影 (保留 pre-check 的 vis)
             old_vis = [kp[2] for kp in kps_2d]
             kps_2d_new = project_keypoints(
-                kps_3d, ctx.K, ctx.R_w2c, ctx.t_w2c, ctx.render_w, ctx.render_h)
+                kps_3d, ctx.K, ctx.R_w2c, ctx.t_w2c, ctx.render_w, ctx.render_h
+            )
             for kp, v in zip(kps_2d_new, old_vis):
                 kp[2] = v
 
@@ -540,26 +528,28 @@ def main(argv: list[str] | None = None) -> None:
                 primary_kp_3d = kps_3d
 
         # ── 组装标注 ──
-        ann = {
-            "id":             idx,
-            "file_name":      img_name,
-            "width":          ctx.render_w,
-            "height":         ctx.render_h,
+        ann: ImageAnnotation = {
+            "id": idx,
+            "file_name": img_name,
+            "width": ctx.render_w,
+            "height": ctx.render_h,
             "keypoint_names": primary_kp_names or [],
-            "keypoints_2d":   primary_kps_2d or [],
-            "keypoints_3d":   [p.tolist() for p in primary_kp_3d] if primary_kp_3d else [],
-            "targets":        targets_ann,
-            "bbox_2d":          targets_ann["pillar"]["bbox_2d"],
+            "keypoints_2d": primary_kps_2d or [],
+            "keypoints_3d": [p.tolist() for p in primary_kp_3d]
+            if primary_kp_3d
+            else [],
+            "targets": targets_ann,
+            "bbox_2d": targets_ann["pillar"]["bbox_2d"],
             "bbox_2d_exchange": targets_ann["exchange"]["bbox_2d"],
-            "camera_K":       ctx.K.tolist(),
-            "camera_R":       ctx.R_w2c.tolist(),
-            "camera_t":       ctx.t_w2c.tolist(),
+            "camera_K": ctx.K.tolist(),
+            "camera_R": ctx.R_w2c.tolist(),
+            "camera_t": ctx.t_w2c.tolist(),
             "camera_pos_world": ctx.cam_pos.tolist(),
             "meta": {
                 **ctx.meta,
-                "light_type":      light_type,
-                "n_visible":       sum(1 for kp in (primary_kps_2d or []) if kp[2] == 2),
-                "n_occluded":      sum(1 for kp in (primary_kps_2d or []) if kp[2] == 1),
+                "light_type": light_type,
+                "n_visible": sum(1 for kp in (primary_kps_2d or []) if kp[2] == 2),
+                "n_occluded": sum(1 for kp in (primary_kps_2d or []) if kp[2] == 1),
             },
         }
         annotations.append(ann)
@@ -579,22 +569,25 @@ def main(argv: list[str] | None = None) -> None:
     output = {
         "targets": [
             {
-                "name":           tgt["name"],
-                "pass_index":     tgt["pass_index"],
+                "name": tgt["name"],
+                "pass_index": tgt["pass_index"],
                 "keypoint_names": list(tgt.get("keypoints", {}).keys()),
-                "keypoints_3d":   list(tgt.get("keypoints", {}).values()),
+                "keypoints_3d": list(tgt.get("keypoints", {}).values()),
             }
             for tgt in _targets_cfg
         ],
-        "keypoint_names":    primary_kp_names or [],
-        "keypoint_3d_world": list(_primary_tgt["keypoints"].values()) if _primary_tgt else [],
-        "images":            annotations,
+        "keypoint_names": primary_kp_names or [],
+        "keypoint_3d_world": list(_primary_tgt["keypoints"].values())
+        if _primary_tgt
+        else [],
+        "images": annotations,
     }
     ann_path = os.path.join(args.output_dir, f"annotations{shard_suffix}.json")
     with open(ann_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
     print(f"\n[render] 完成! {len(annotations)}/{n_this_shard} 张, 标注: {ann_path}")
+
 
 if __name__ == "__main__":
     main()

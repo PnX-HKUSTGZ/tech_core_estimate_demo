@@ -38,9 +38,10 @@ param_scheduler = [
 auto_scale_lr = dict(base_batch_size=256)
 
 # codec settings
+codec_input_size = (256, 256)
 codec = dict(
     type="SimCCLabel",
-    input_size=(256, 256),
+    input_size=codec_input_size,
     sigma=(5.66, 5.66),
     simcc_split_ratio=2.0,
     normalize=False,
@@ -79,7 +80,7 @@ model = dict(
         in_channels=512,
         out_channels=5,
         input_size=codec["input_size"],
-        in_featuremap_size=tuple([s // 32 for s in codec["input_size"]]),
+        in_featuremap_size=tuple(s // 32 for s in codec_input_size),
         simcc_split_ratio=codec["simcc_split_ratio"],
         final_layer_kernel_size=7,
         gau_cfg=dict(

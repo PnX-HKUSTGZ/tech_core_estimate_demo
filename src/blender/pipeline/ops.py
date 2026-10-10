@@ -14,17 +14,42 @@ GlareSetupOp     : 一次性设定 Compositor Glare 节点 (灯条光晕)
 ObjectTransformOp: 每帧采样 yaw/pitch/roll/distance/offset, 通过 Empty 父级
                    整体变换所有场景物体, 并做取景检查
 """
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Generic, TypeVar
+
 import math
 import random
 import numpy as np
 
 import bpy
-from mathutils import Vector, Euler
+from mathutils import Vector, Euler, Matrix
+
+from .context import RenderContext
+from .schema import (
+    ArcLightConfig,
+    AuxLightConfig,
+    CameraConfig,
+    FloatArray,
+    GlareConfig,
+    LightingConfig,
+    MainLightConfig,
+    Metadata,
+    PipelineConfig,
+    SceneConfig,
+    StripLightConfig,
+    TargetConfig,
+    TransformConfig,
+)
 
 from .utils import all_kps_in_frame, blender_cam_to_opencv, get_camera_K
 
 
-def transform_keypoints_3d(kp_3d_initial, matrix_world_4x4):
+def transform_keypoints_3d(
+    kp_3d_initial: Sequence[FloatArray], matrix_world_4x4: Matrix | FloatArray
+) -> list[FloatArray]:
     """用 4x4 变换矩阵将初始 3D 关键点变换到当前帧世界坐标.
 
     Parameters
@@ -47,7 +72,9 @@ def transform_keypoints_3d(kp_3d_initial, matrix_world_4x4):
     return result
 
 
-def _find_emission_node(node_tree, preferred_name: str):
+def _find_emission_node(
+    node_tree: bpy.types.NodeTree | None, preferred_name: str
+) -> bpy.types.Node | None:
     """在材质节点树中查找用于调强度的 Emission 节点."""
     if node_tree is None:
         return None
@@ -65,22 +92,25 @@ def _find_emission_node(node_tree, preferred_name: str):
 #  基类
 # ─────────────────────────────────────────────────
 
-class Op:
+ConfigT = TypeVar("ConfigT", covariant=True)
+
+
+class Op(Generic[ConfigT]):
     """操作基类."""
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: ConfigT) -> None:
         self.cfg = cfg
 
-    def apply(self, ctx) -> dict:
+    def apply(self, ctx: RenderContext) -> Metadata:
         raise NotImplementedError
 
-    def cleanup(self, ctx):
+    def cleanup(self, ctx: RenderContext) -> None:
         pass
 
-    def skip(self, ctx) -> dict:
+    def skip(self, ctx: RenderContext) -> Metadata:
         return {}
 
-    def __call__(self, ctx) -> dict:
+    def __call__(self, ctx: RenderContext) -> Metadata:
         meta = self.apply(ctx)
         if meta:
             ctx.meta.update(meta)
@@ -91,7 +121,8 @@ class Op:
 #  FixedCameraOp — 一次性设定相机
 # ─────────────────────────────────────────────────
 
-class FixedCameraOp(Op):
+
+class FixedCameraOp(Op[CameraConfig]):
     """固定相机: 设定位置、朝向、FOV, 之后每帧不变.
 
     YAML camera 块:
@@ -100,12 +131,16 @@ class FixedCameraOp(Op):
       fov_h_deg: float        水平视场角 (度)
     """
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: CameraConfig) -> None:
         super().__init__(cfg)
         self._done = False
-        self._cached_meta = {}
+        self._cached_meta: Metadata = {}
+        self._K: FloatArray
+        self._R: FloatArray
+        self._t: FloatArray
+        self._cam_pos: FloatArray
 
-    def apply(self, ctx) -> dict:
+    def apply(self, ctx: RenderContext) -> Metadata:
         if self._done:
             ctx.K = self._K
             ctx.R_w2c = self._R
@@ -135,7 +170,7 @@ class FixedCameraOp(Op):
 
         self._K = get_camera_K(cam_data, scene)
         self._R, self._t = blender_cam_to_opencv(cam_obj)
-        self._cam_pos = (-self._R.T @ self._t)
+        self._cam_pos = -self._R.T @ self._t
 
         ctx.K = self._K
         ctx.R_w2c = self._R
@@ -172,7 +207,8 @@ class FixedCameraOp(Op):
 #  LightingSetupOp — 一次性灯光
 # ─────────────────────────────────────────────────
 
-class LightingSetupOp(Op):
+
+class LightingSetupOp(Op[LightingConfig]):
     """设定全局灯条材质 + 世界背景, 并支持独立灯条逐帧随机.
 
     YAML lighting 块:
@@ -183,13 +219,15 @@ class LightingSetupOp(Op):
       ambient_color:     [r, g, b] 世界背景色
     """
 
-    def __init__(self, cfg: dict, scene_cfg: dict):
+    def __init__(self, cfg: LightingConfig, scene_cfg: SceneConfig) -> None:
         super().__init__(cfg)
         self._scene_cfg = scene_cfg
         self._globals_done = False
-        self._material_cache = {}
+        self._material_cache: dict[tuple[str, str, str], bpy.types.Material] = {}
 
-    def _resolve_slot_indices(self, obj, managed_mat_names):
+    def _resolve_slot_indices(
+        self, obj: bpy.types.Object, managed_mat_names: set[str]
+    ) -> list[int]:
         slot_indices = []
         for i, slot in enumerate(obj.material_slots):
             m = slot.material
@@ -201,7 +239,9 @@ class LightingSetupOp(Op):
             slot_indices = [0]
         return slot_indices
 
-    def _resolve_strength(self, group_cfg: dict, default_strength: float) -> float:
+    def _resolve_strength(
+        self, group_cfg: StripLightConfig, default_strength: float
+    ) -> float:
         strength_range = group_cfg.get("strength_range")
         if isinstance(strength_range, (list, tuple)) and len(strength_range) == 2:
             lo = float(strength_range[0])
@@ -211,15 +251,25 @@ class LightingSetupOp(Op):
             return random.uniform(lo, hi)
         return float(group_cfg.get("strength", default_strength))
 
-    def _resolve_light_type(self, raw_type, choices=None):
+    def _resolve_light_type(
+        self, raw_type: str, choices: Sequence[str] | None = None
+    ) -> str:
         if raw_type != "random":
             return raw_type
         choices = choices or ["red", "blue"]
         valid = [c for c in choices if c in ("red", "blue", "off")]
         return random.choice(valid or ["red", "blue"])
 
-    def _get_assign_material(self, strip_name, light_type, strength,
-                             mats, mat_map, emission_name, cache_prefix):
+    def _get_assign_material(
+        self,
+        strip_name: str,
+        light_type: str,
+        strength: float,
+        mats: Mapping[str, bpy.types.Material],
+        mat_map: Mapping[str, str],
+        emission_name: str,
+        cache_prefix: str,
+    ) -> bpy.types.Material | None:
         base_mat_name = mat_map.get(light_type, mat_map.get("off", ""))
         base_mat = mats.get(base_mat_name)
         if base_mat is None:
@@ -242,8 +292,15 @@ class LightingSetupOp(Op):
                 sock.default_value = strength
         return assign
 
-    def _apply_group(self, light_objects, light_type, strength,
-                     mat_map, emission_name, cache_prefix):
+    def _apply_group(
+        self,
+        light_objects: Sequence[str],
+        light_type: str,
+        strength: float,
+        mat_map: Mapping[str, str],
+        emission_name: str,
+        cache_prefix: str,
+    ) -> None:
         mats = {m.name: m for m in bpy.data.materials}
         managed_mat_names = {name for name in mat_map.values() if name}
 
@@ -271,7 +328,7 @@ class LightingSetupOp(Op):
             if not obj.material_slots:
                 obj.data.materials.append(assign)
 
-    def _setup_environment(self, ctx):
+    def _setup_environment(self, ctx: RenderContext) -> None:
         if self._globals_done:
             return
 
@@ -294,14 +351,15 @@ class LightingSetupOp(Op):
 
         self._globals_done = True
 
-    def apply(self, ctx) -> dict:
+    def apply(self, ctx: RenderContext) -> Metadata:
         c = self.cfg
         sc = self._scene_cfg
         self._setup_environment(ctx)
 
         global_raw_type = getattr(ctx, "light_type", None) or c.get("light_type", "red")
         global_light_type = self._resolve_light_type(
-            global_raw_type, c.get("light_type_choices"))
+            global_raw_type, c.get("light_type_choices")
+        )
         global_strength = float(c.get("strips_strength", 1.2))
         global_mat_map = sc.get("material_map", {})
         global_emission_name = sc.get("emission_node", "自发光")
@@ -324,7 +382,8 @@ class LightingSetupOp(Op):
             strip_light_type = global_light_type
         else:
             strip_light_type = self._resolve_light_type(
-                strip_raw_type, strip_cfg.get("color_choices"))
+                strip_raw_type, strip_cfg.get("color_choices")
+            )
 
         strip_strength = None
         strip_state = "disabled"
@@ -364,7 +423,8 @@ class LightingSetupOp(Op):
 #  ArcLightsOp — 弧形灯条 (一次性)
 # ─────────────────────────────────────────────────
 
-class ArcLightsOp(Op):
+
+class ArcLightsOp(Op[ArcLightConfig]):
     """背部弧形灯条控制 (自发光, 支持静态/闪烁/随机颜色).
 
     YAML lighting.arc_lights 块:
@@ -383,29 +443,37 @@ class ArcLightsOp(Op):
       emission_node:   str          Emission 节点名
     """
 
-    def __init__(self, cfg: dict, scene_cfg: dict):
+    def __init__(self, cfg: ArcLightConfig, scene_cfg: SceneConfig) -> None:
         super().__init__(cfg)
         self._scene_cfg = scene_cfg
-        self._tmp_mats: list = []
-        self._on_mat = None
-        self._off_mat = None
+        self._tmp_mats: list[bpy.types.Material] = []
+        self._on_mat: bpy.types.Material | None = None
+        self._off_mat: bpy.types.Material | None = None
         self._initialized = False
 
-    def _resolve_color(self, raw_color, choices=None):
+    def _resolve_color(
+        self, raw_color: str, choices: Sequence[str] | None = None
+    ) -> str:
         if raw_color != "random":
             return raw_color
         choices = choices or ["red", "blue"]
         valid = [c for c in choices if c in ("white", "red", "blue", "off")]
         return random.choice(valid or ["red", "blue"])
 
-    def _color_rgba(self, color_name):
+    def _color_rgba(self, color_name: str) -> tuple[float, float, float, float]:
         if color_name == "red":
             return (1.0, 0.05, 0.02, 1.0)
         if color_name == "blue":
             return (0.05, 0.25, 1.0, 1.0)
         return (1.0, 1.0, 1.0, 1.0)
 
-    def _set_on_material(self, mat, em_node_name, strength, color_name):
+    def _set_on_material(
+        self,
+        mat: bpy.types.Material | None,
+        em_node_name: str,
+        strength: float,
+        color_name: str,
+    ) -> None:
         if mat is None:
             return
         rgba = self._color_rgba(color_name)
@@ -423,7 +491,9 @@ class ArcLightsOp(Op):
             if dc is not None and hasattr(dc, "default_value"):
                 dc.default_value = rgba
 
-    def _build_on_material(self, base_mat_name, em_node_name, strength, color_name):
+    def _build_on_material(
+        self, base_mat_name: str, em_node_name: str, strength: float, color_name: str
+    ) -> bpy.types.Material | None:
         base_mat = bpy.data.materials.get(base_mat_name)
         if base_mat is None:
             return None
@@ -433,17 +503,32 @@ class ArcLightsOp(Op):
         self._set_on_material(new_mat, em_node_name, strength, color_name)
         return new_mat
 
-    def _ensure_materials(self, strength, base_mat_name, off_mat_name,
-                          em_node_name, color_name):
+    def _ensure_materials(
+        self,
+        strength: float,
+        base_mat_name: str,
+        off_mat_name: str,
+        em_node_name: str,
+        color_name: str,
+    ) -> None:
         if self._initialized:
             return
         self._off_mat = bpy.data.materials.get(off_mat_name)
         self._on_mat = self._build_on_material(
-            base_mat_name, em_node_name, strength, color_name)
+            base_mat_name, em_node_name, strength, color_name
+        )
         self._initialized = True
 
-    def _sample_active_mask(self, n_objects, blink, on_prob, per_object,
-                            min_on_count, max_on_count, force_off):
+    def _sample_active_mask(
+        self,
+        n_objects: int,
+        blink: bool,
+        on_prob: float,
+        per_object: bool,
+        min_on_count: int,
+        max_on_count: int,
+        force_off: bool,
+    ) -> tuple[list[bool], str]:
         if force_off or n_objects == 0:
             return [False] * n_objects, "off"
         if not blink:
@@ -468,7 +553,7 @@ class ArcLightsOp(Op):
                 active[idx] = True
         return active, "blink_mix"
 
-    def apply(self, ctx) -> dict:
+    def apply(self, ctx: RenderContext) -> Metadata:
         c = self.cfg
         objects = c.get("objects", [])
         strength = c.get("strength", 2.0)
@@ -481,11 +566,13 @@ class ArcLightsOp(Op):
         color = self._resolve_color(c.get("color", "white"), c.get("color_choices"))
         base_mat_name = c.get("base_material", "light_bar_red")
         off_mat_name = c.get("off_material", "light_bar_off")
-        em_node_name = c.get("emission_node",
-                             self._scene_cfg.get("emission_node", "自发光"))
+        em_node_name = c.get(
+            "emission_node", self._scene_cfg.get("emission_node", "自发光")
+        )
 
-        self._ensure_materials(strength, base_mat_name, off_mat_name,
-                               em_node_name, color)
+        self._ensure_materials(
+            strength, base_mat_name, off_mat_name, em_node_name, color
+        )
         self._set_on_material(self._on_mat, em_node_name, strength, color)
         if self._off_mat is None and self._on_mat is None:
             return {"arc_lights": "missing_material", "arc_strength": 0.0}
@@ -526,7 +613,8 @@ class ArcLightsOp(Op):
 #  MainLightsOp — 主侧板灯 (一次性)
 # ─────────────────────────────────────────────────
 
-class MainLightsOp(Op):
+
+class MainLightsOp(Op[MainLightConfig]):
     """主侧板灯: back_main_light_1/2 材质 + left_light/right_light Area 灯.
 
     YAML lighting.main_lights 块:
@@ -537,12 +625,12 @@ class MainLightsOp(Op):
       base_material:  str         复制用基础材质
     """
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: MainLightConfig) -> None:
         super().__init__(cfg)
         self._done = False
-        self._tmp_mats: list = []
+        self._tmp_mats: list[bpy.types.Material] = []
 
-    def apply(self, ctx) -> dict:
+    def apply(self, ctx: RenderContext) -> Metadata:
         if self._done:
             return {}
 
@@ -593,7 +681,8 @@ class MainLightsOp(Op):
 #  AuxLightsOp — 辅助点光源 (每帧随机)
 # ─────────────────────────────────────────────────
 
-class AuxLightsOp(Op):
+
+class AuxLightsOp(Op[AuxLightConfig]):
     """辅助随机点光源, 模拟环境光扰动.
 
     YAML lighting.aux_lights 块:
@@ -602,12 +691,12 @@ class AuxLightsOp(Op):
       energy_range: [lo, hi]  灯能量范围 (W)
     """
 
-    def __init__(self, cfg: dict, pivot):
+    def __init__(self, cfg: AuxLightConfig, pivot: Sequence[float]) -> None:
         super().__init__(cfg)
         self._pivot = np.array(pivot, dtype=np.float64)
-        self._tmp_objs: list = []
+        self._tmp_objs: list[bpy.types.Object] = []
 
-    def apply(self, ctx) -> dict:
+    def apply(self, ctx: RenderContext) -> Metadata:
         self.cleanup(ctx)
 
         c = self.cfg
@@ -647,7 +736,7 @@ class AuxLightsOp(Op):
 
         return {"aux_lights_count": n}
 
-    def cleanup(self, ctx):
+    def cleanup(self, ctx: RenderContext) -> None:
         for obj in self._tmp_objs:
             bpy.data.objects.remove(obj, do_unlink=True)
         self._tmp_objs = []
@@ -657,7 +746,8 @@ class AuxLightsOp(Op):
 #  GlareSetupOp — Compositor Glare
 # ─────────────────────────────────────────────────
 
-class GlareSetupOp(Op):
+
+class GlareSetupOp(Op[GlareConfig]):
     """在 Compositor 中插入 Glare 节点 (FOG_GLOW), 模拟灯条光晕.
 
     YAML lighting.glare 块:
@@ -668,12 +758,12 @@ class GlareSetupOp(Op):
       mix:              float        混合比例 (-1=原图, 0=50/50, 1=全辉光)
     """
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: GlareConfig) -> None:
         super().__init__(cfg)
         self._done = False
-        self._glare_node = None
+        self._glare_node: bpy.types.CompositorNodeGlare | None = None
 
-    def _sample_size(self, cfg: dict) -> int | None:
+    def _sample_size(self, cfg: GlareConfig) -> int | None:
         size_range = cfg.get("size_range")
         if isinstance(size_range, (list, tuple)) and len(size_range) == 2:
             try:
@@ -690,7 +780,7 @@ class GlareSetupOp(Op):
         except (TypeError, ValueError):
             return None
 
-    def _apply_dynamic_values(self, cfg: dict) -> dict:
+    def _apply_dynamic_values(self, cfg: GlareConfig) -> Metadata:
         if self._glare_node is None:
             return {}
 
@@ -704,7 +794,7 @@ class GlareSetupOp(Op):
             "glare_size": sampled_size,
         }
 
-    def apply(self, ctx) -> dict:
+    def apply(self, ctx: RenderContext) -> Metadata:
         c = self.cfg
         if not c:
             self._done = True
@@ -770,7 +860,8 @@ class GlareSetupOp(Op):
 #  ObjectTransformOp — 每帧核心
 # ─────────────────────────────────────────────────
 
-class ObjectTransformOp(Op):
+
+class ObjectTransformOp(Op[TransformConfig]):
     """每帧通过 Empty 父级整体变换场景物体.
 
     将所有 MESH 对象 parent 到一个 Empty, 每帧采样
@@ -797,19 +888,24 @@ class ObjectTransformOp(Op):
         y_range:       [lo, hi]   Y 轴滑动范围 (m)
     """
 
-    def __init__(self, cfg: dict, scene_cfg: dict, targets_cfg: list,
-                 cam_op: 'FixedCameraOp'):
+    def __init__(
+        self,
+        cfg: TransformConfig,
+        scene_cfg: SceneConfig,
+        targets_cfg: Sequence[TargetConfig],
+        cam_op: FixedCameraOp,
+    ) -> None:
         super().__init__(cfg)
         self._scene_cfg = scene_cfg
         self._cam_op = cam_op
-        self._empty = None
+        self._empty: bpy.types.Object | None = None
         self._pivot = np.array(cfg["pivot"], dtype=np.float64)
         # 兜底初始化，避免异常路径下未设置导致 apply() 崩溃
         self._M_init_inv = np.eye(4, dtype=np.float64)
 
         # 收集所有 target 的初始关键点
-        self._all_kp_initial = {}
-        self._all_kp_names = {}
+        self._all_kp_initial: dict[str, list[FloatArray]] = {}
+        self._all_kp_names: dict[str, list[str]] = {}
         for tgt in targets_cfg:
             kps = tgt.get("keypoints", {})
             if kps:
@@ -819,23 +915,26 @@ class ObjectTransformOp(Op):
                 ]
 
         # 合并所有关键点用于取景检查
-        self._framing_kps_initial = []
+        self._framing_kps_initial: list[FloatArray] = []
         for pts in self._all_kp_initial.values():
             self._framing_kps_initial.extend(pts)
 
         # pillar_slide 配置
         self._slide_cfg = cfg.get("pillar_slide")
-        self._slide_objs = []
-        self._slide_init_locs = {}
+        self._slide_objs: list[bpy.types.Object] = []
+        self._slide_init_locs: dict[str, Vector] = {}
         if self._slide_cfg:
             import fnmatch as _fn
+
             patterns = self._slide_cfg.get("objects", ["pillar_*"])
             for obj in bpy.data.objects:
-                if obj.type == "MESH" and any(_fn.fnmatch(obj.name, p) for p in patterns):
+                if obj.type == "MESH" and any(
+                    _fn.fnmatch(obj.name, p) for p in patterns
+                ):
                     self._slide_objs.append(obj)
                     self._slide_init_locs[obj.name] = obj.location.copy()
 
-    def _ensure_empty(self):
+    def _ensure_empty(self) -> None:
         """创建 Empty 并 parent 所有 MESH 对象 (只执行一次)."""
         if self._empty is not None:
             return
@@ -861,20 +960,21 @@ class ObjectTransformOp(Op):
             for obj in self._slide_objs:
                 self._slide_init_locs[obj.name] = obj.location.copy()
 
-    def _apply_pillar_slide(self, slide_y: float):
+    def _apply_pillar_slide(self, slide_y: float) -> None:
         """在 Empty 局部空间中沿 Y 轴偏移 pillar 对象."""
         for obj in self._slide_objs:
             init = self._slide_init_locs[obj.name]
             obj.location = Vector((init.x, init.y + slide_y, init.z))
 
-    def _restore_pillar_slide(self):
+    def _restore_pillar_slide(self) -> None:
         """恢复 pillar 对象到局部原位."""
         for obj in self._slide_objs:
             obj.location = self._slide_init_locs[obj.name].copy()
 
-    def apply(self, ctx) -> dict:
+    def apply(self, ctx: RenderContext) -> Metadata:
         self._ensure_empty()
         empty = self._empty
+        assert empty is not None  # _ensure_empty creates the shared transform.
 
         c = self.cfg
         cam = self._cam_op
@@ -887,6 +987,8 @@ class ObjectTransformOp(Op):
         oy_lo, oy_hi = c["offset_y_range"]
         max_retries = c.get("max_retries", 50)
         margin = c.get("framing_margin", 30)
+        if max_retries < 1:
+            raise ValueError("object_transform.max_retries must be at least 1")
 
         # pillar slide 参数
         slide_y = 0.0
@@ -900,8 +1002,12 @@ class ObjectTransformOp(Op):
         K = ctx.K
         R = ctx.R_w2c
         t = ctx.t_w2c
+        if K is None or R is None or t is None:
+            raise RuntimeError("FixedCameraOp must run before ObjectTransformOp")
 
-        slide_target = self._slide_cfg.get("target", "pillar") if self._slide_cfg else None
+        slide_target = (
+            self._slide_cfg.get("target", "pillar") if self._slide_cfg else None
+        )
         framing_kps = []
         for tgt_name, pts in self._all_kp_initial.items():
             for pt in pts:
@@ -926,11 +1032,14 @@ class ObjectTransformOp(Op):
             )
 
             empty.location = Vector(new_center)
-            empty.rotation_euler = Euler((
-                math.radians(pitch),
-                math.radians(roll),
-                math.radians(yaw),
-            ), 'XYZ')
+            empty.rotation_euler = Euler(
+                (
+                    math.radians(pitch),
+                    math.radians(roll),
+                    math.radians(yaw),
+                ),
+                "XYZ",
+            )
 
             if slide_y != 0.0:
                 self._apply_pillar_slide(slide_y)
@@ -970,7 +1079,7 @@ class ObjectTransformOp(Op):
         ctx.crop_h = H
         ctx.bbox_2d = [0, 0, W - 1, H - 1]
 
-        meta = {
+        meta: Metadata = {
             "yaw_deg": round(yaw, 2),
             "pitch_deg": round(pitch, 2),
             "roll_deg": round(roll, 2),
@@ -982,7 +1091,7 @@ class ObjectTransformOp(Op):
             meta["pillar_slide_y"] = round(slide_y, 4)
         return meta
 
-    def cleanup(self, ctx):
+    def cleanup(self, ctx: RenderContext) -> None:
         self._restore_pillar_slide()
 
 
@@ -990,7 +1099,10 @@ class ObjectTransformOp(Op):
 #  Pipeline builder
 # ─────────────────────────────────────────────────
 
-def build_ops(cfg: dict):
+
+def build_ops(
+    cfg: PipelineConfig,
+) -> tuple[list[Op[object]], list[Op[object]], SceneConfig]:
     """从完整配置构建 ops 列表.
 
     Returns
@@ -1002,9 +1114,8 @@ def build_ops(cfg: dict):
     light_cfg = cfg.get("lighting", {})
     pivot = cfg["object_transform"]["pivot"]
 
-    pre_render = []
-
-    pre_render.append(FixedCameraOp(cfg["camera"]))
+    cam_op = FixedCameraOp(cfg["camera"])
+    pre_render: list[Op[object]] = [cam_op]
     pre_render.append(LightingSetupOp(light_cfg, scene_cfg))
 
     if "arc_lights" in light_cfg:
@@ -1016,9 +1127,9 @@ def build_ops(cfg: dict):
     if "glare" in light_cfg:
         pre_render.append(GlareSetupOp(light_cfg["glare"]))
 
-    cam_op = pre_render[0]  # FixedCameraOp
-    pre_render.append(ObjectTransformOp(
-        cfg["object_transform"], scene_cfg, targets_cfg, cam_op))
+    pre_render.append(
+        ObjectTransformOp(cfg["object_transform"], scene_cfg, targets_cfg, cam_op)
+    )
 
-    post_render = []
+    post_render: list[Op[object]] = []
     return pre_render, post_render, scene_cfg

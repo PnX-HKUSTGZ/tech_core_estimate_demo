@@ -8,9 +8,11 @@ the pillar transform therefore describes the current pillar, including slide.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import TypeAlias
 
 import cv2
 import numpy as np
+from numpy.typing import NDArray
 
 from .types import BodyPose, FloatArray, KeypointDetection, PILLAR_NAMES, PoseResult, STATION_NAMES
 
@@ -31,7 +33,8 @@ _DEFAULT_STATION_POINTS: dict[str, tuple[float, float, float]] = {
     "light_BL": (-0.112000, -0.114870, 0.035953),
 }
 
-PointMap = Mapping[str, Sequence[float] | FloatArray]
+PointMap: TypeAlias = Mapping[str, Sequence[float] | FloatArray]
+_IndexArray: TypeAlias = NDArray[np.intp]
 
 
 def _finite_number(value: float, name: str) -> float:
@@ -130,7 +133,7 @@ def _reprojection_errors(
     errors = np.linalg.norm(projected - image_points, axis=1)
     if not np.isfinite(errors).all():
         raise ValueError("nonfinite_reprojection")
-    return errors
+    return np.asarray(errors, dtype=np.float64)
 
 
 class PoseEstimator:
@@ -258,41 +261,15 @@ class PoseEstimator:
         except (FloatingPointError, np.linalg.LinAlgError):
             return failed("degenerate_image_geometry")
 
-        inliers = np.arange(len(selected), dtype=np.intp)
+        inliers: _IndexArray = np.arange(len(selected), dtype=np.intp)
         try:
             if self.use_ransac:
-                try:
-                    ok, _, _, selected_inliers = cv2.solvePnPRansac(
-                        object_points,
-                        image_points,
-                        camera,
-                        distortion,
-                        iterationsCount=self.ransac_iterations,
-                        reprojectionError=self.ransac_reprojection_error_px,
-                        confidence=self.ransac_confidence,
-                        flags=cv2.SOLVEPNP_SQPNP,
-                    )
-                except cv2.error:
-                    if rank != 2:
-                        raise
-                    ok, selected_inliers = False, None
-                if rank == 2 and (not ok or selected_inliers is None or len(selected_inliers) < self.min_points):
-                    # OpenCV's SQPnP RANSAC can reject even noiseless planar
-                    # seven-point sets. AP3P only chooses the inliers; the
-                    # accepted pose is still solved with SQPnP and refined LM.
-                    ok, _, _, selected_inliers = cv2.solvePnPRansac(
-                        object_points,
-                        image_points,
-                        camera,
-                        distortion,
-                        iterationsCount=self.ransac_iterations,
-                        reprojectionError=self.ransac_reprojection_error_px,
-                        confidence=self.ransac_confidence,
-                        flags=cv2.SOLVEPNP_AP3P,
-                    )
-                if not ok or selected_inliers is None or len(selected_inliers) < self.min_points:
+                selected_inliers = self._ransac_inliers(
+                    object_points, image_points, camera, distortion, rank
+                )
+                if selected_inliers is None:
                     return failed("ransac_fewer_than_minimum_inliers")
-                inliers = np.asarray(selected_inliers, dtype=np.intp).reshape(-1)
+                inliers = selected_inliers
             inlier_names = tuple(used_names[index] for index in inliers)
             fit_object = object_points[inliers]
             fit_image = image_points[inliers]
@@ -308,15 +285,17 @@ class PoseEstimator:
             candidate_count = 0
             for raw_rotation, raw_translation in zip(rotations, translations, strict=True):
                 try:
-                    rotation_vector = np.asarray(raw_rotation, dtype=np.float64).reshape(3, 1)
-                    translation_vector = np.asarray(raw_translation, dtype=np.float64).reshape(3, 1)
+                    rotation_vector: FloatArray = np.asarray(raw_rotation, dtype=np.float64).reshape(3, 1)
+                    translation_vector: FloatArray = np.asarray(raw_translation, dtype=np.float64).reshape(3, 1)
                     if not (np.isfinite(rotation_vector).all() and np.isfinite(translation_vector).all()):
                         continue
                     if not _positive_depth(geometry, rotation_vector, translation_vector):
                         continue
-                    rotation_vector, translation_vector = cv2.solvePnPRefineLM(
+                    refined_rotation, refined_translation = cv2.solvePnPRefineLM(
                         fit_object, fit_image, camera, distortion, rotation_vector, translation_vector
                     )
+                    rotation_vector = np.asarray(refined_rotation, dtype=np.float64)
+                    translation_vector = np.asarray(refined_translation, dtype=np.float64)
                     if not (
                         np.isfinite(rotation_vector).all()
                         and np.isfinite(translation_vector).all()
@@ -370,3 +349,45 @@ class PoseEstimator:
             )
         except (cv2.error, FloatingPointError, ValueError, np.linalg.LinAlgError) as exc:
             return failed(f"pnp_failed: {exc}")
+
+    def _ransac_inliers(
+        self,
+        object_points: FloatArray,
+        image_points: FloatArray,
+        camera: FloatArray,
+        distortion: FloatArray,
+        rank: int,
+    ) -> _IndexArray | None:
+        """Select inliers, retaining the planar-only OpenCV AP3P fallback."""
+        try:
+            ok, _, _, selected_inliers = cv2.solvePnPRansac(
+                object_points,
+                image_points,
+                camera,
+                distortion,
+                iterationsCount=self.ransac_iterations,
+                reprojectionError=self.ransac_reprojection_error_px,
+                confidence=self.ransac_confidence,
+                flags=cv2.SOLVEPNP_SQPNP,
+            )
+        except cv2.error:
+            if rank != 2:
+                raise
+            ok, selected_inliers = False, None
+        if rank == 2 and (not ok or selected_inliers is None or len(selected_inliers) < self.min_points):
+            # OpenCV's SQPnP RANSAC can reject even noiseless planar
+            # seven-point sets. AP3P only chooses the inliers; the
+            # accepted pose is still solved with SQPnP and refined LM.
+            ok, _, _, selected_inliers = cv2.solvePnPRansac(
+                object_points,
+                image_points,
+                camera,
+                distortion,
+                iterationsCount=self.ransac_iterations,
+                reprojectionError=self.ransac_reprojection_error_px,
+                confidence=self.ransac_confidence,
+                flags=cv2.SOLVEPNP_AP3P,
+            )
+        if not ok or selected_inliers is None or len(selected_inliers) < self.min_points:
+            return None
+        return np.asarray(selected_inliers, dtype=np.intp).reshape(-1)

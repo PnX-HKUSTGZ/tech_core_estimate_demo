@@ -28,6 +28,7 @@ dependencies = [
     "torch==2.11.0",
     "torchvision==0.26.0",
     "tqdm==4.70.0",
+    "typing-extensions>=4.4",
     "ultralytics==8.4.46",
     "wheel>=0.43",
     "xtcocotools==1.14.3",
@@ -84,3 +85,43 @@ requires-dist = [
     "regex; sys_platform == 'win32'",
     "yapf",
 ]
+
+[tool.mypy]
+python_version = "3.10"
+python_executable = ".venv/bin/python"
+files = ["src/blender", "src/nn", "src/perception"]
+strict = true
+follow_imports = "silent"
+show_error_codes = true
+
+# These runtime libraries do not publish complete PEP 561 type information.
+# Keep missing-import exceptions at their boundary, not across project code.
+[[tool.mypy.overrides]]
+module = [
+    "albumentations.*",
+    "bpy.*",
+    "bpy_extras.*",
+    "mathutils.*",
+    "mmcv.*",
+    "mmengine.*",
+    "mmpose.*",
+    "openvino.*",
+    "pycocotools.*",
+    "tqdm.*",
+    "ultralytics.*",
+    "xtcocotools.*",
+    "yaml.*",
+]
+ignore_missing_imports = true
+
+# Upstream MMCV/MMPose base classes are untyped; their local subclasses still
+# require fully annotated methods and are checked under all other strict rules.
+[[tool.mypy.overrides]]
+module = ["nn.hrnet.custom.albumentation", "nn.hrnet.custom.visibility_head"]
+disallow_subclassing_any = false
+
+# Historical experimental loss check references an upstream module that was
+# never included in this checkout; this does not make that script runnable.
+[[tool.mypy.overrides]]
+module = ["pillar_models"]
+ignore_missing_imports = true

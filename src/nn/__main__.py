@@ -3,11 +3,12 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import cast
 
 
-_COMMANDS = {
+_COMMANDS: dict[tuple[str, ...], tuple[str, str]] = {
     ("check",): ("nn.hrnet.tools.check_environment", "检查共享神经网络环境"),
     ("hrnet", "train"): ("nn.hrnet.tools.train", "训练 LiteHRNet"),
     ("hrnet", "infer"): ("nn.hrnet.tools.infer", "对图片或视频执行两阶段推理"),
@@ -92,7 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     original_argv = sys.argv
     try:
         sys.argv = [module_name, *command_args]
-        result = command_main()
+        result = cast(Callable[[], object], command_main)()
     finally:
         sys.argv = original_argv
     return result if isinstance(result, int) else 0
