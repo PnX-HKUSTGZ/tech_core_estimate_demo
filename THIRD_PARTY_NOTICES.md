@@ -1,6 +1,6 @@
 # HKUST ENTERPRIZE source
 
-`src/nn`, `src/blender`, and the algorithms adapted in `src/perception` originate from the HKUST ENTERPRIZE RM2026 Engineer Assembly Algorithm repository, source revision `cb5ef2f3dea1223c0fedbd358c4129b2c586cb33`. The upstream permission notice is preserved below. Downloaded models have their own upstream license and usage terms.
+`src/nn`, `src/blender`, and the algorithms adapted in `src/perception` and `src/dataset_augment` originate from the HKUST ENTERPRIZE RM2026 Engineer Assembly Algorithm repository, source revision `cb5ef2f3dea1223c0fedbd358c4129b2c586cb33`. Offline augmentation adapts `automation/augment_photometric.py` and the crop algorithms in `src/nn/yolo/train/augmentations.py`. The upstream permission notice is preserved below. Downloaded models have their own upstream license and usage terms.
 
 MIT License
 

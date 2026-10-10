@@ -29,6 +29,7 @@ _COMMANDS: dict[tuple[str, ...], tuple[str, str]] = {
         "导出 LiteHRNet OpenVINO 模型",
     ),
     ("yolo", "train"): ("nn.yolo.train.train", "训练 YOLO pose 或 detect 模型"),
+    ("yolo", "augment"): ("dataset_augment.cli", "独立 YOLO 数据集离线增强"),
     ("yolo", "pose2detect"): (
         "nn.yolo.pose2detect",
         "将 YOLO Pose 数据集转换为检测数据集",

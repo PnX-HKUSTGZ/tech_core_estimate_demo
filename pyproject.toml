@@ -57,6 +57,7 @@ package = true
 [tool.setuptools]
 package-dir = { "" = "src" }
 packages = [
+    "dataset_augment",
     "perception",
     "nn",
     "nn.hrnet",
@@ -66,6 +67,9 @@ packages = [
     "nn.yolo",
     "nn.yolo.train",
 ]
+
+[tool.setuptools.package-data]
+dataset_augment = ["README.md", "configs/*.yaml"]
 
 [[tool.uv.dependency-metadata]]
 name = "chumpy"
@@ -89,7 +93,7 @@ requires-dist = [
 [tool.mypy]
 python_version = "3.10"
 python_executable = ".venv/bin/python"
-files = ["src/blender", "src/nn", "src/perception"]
+files = ["src/blender", "src/nn", "src/perception", "src/dataset_augment"]
 strict = true
 follow_imports = "silent"
 show_error_codes = true

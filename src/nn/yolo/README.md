@@ -50,6 +50,18 @@ uv run --no-sync rm-nn yolo pose2detect \
   --output /absolute/path/to/exchange_detect
 ```
 
+## 离线增强
+
+对已有标准 YOLO 检测或 Pose 数据集生成独立增强副本：
+
+```bash
+uv run --no-sync rm-nn yolo augment \
+  --source /absolute/path/to/dataset \
+  --output /absolute/path/to/augmented
+```
+
+默认保留原图并为每张训练图生成一个变体，验证和测试集原样复制。完整增强选项、标签合同和 YAML 配置见 [独立增强模块](../../dataset_augment/README.md)。
+
 ## 训练
 
 YOLO、LiteHRNet 和普通 Python 数据工具共用仓库根目录的 uv 环境。先运行 `bash setup_env.sh`，

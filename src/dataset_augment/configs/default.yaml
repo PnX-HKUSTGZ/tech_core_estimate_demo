@@ -1,0 +1,50 @@
+# 独立输入；仅 train 增强为 2 倍，val/test 原样复制。
+# 相对 source/output 路径以本 YAML 所在目录为基准。
+dataset:
+  source: /path/to/dataset
+  output: /path/to/augmented
+  task: auto
+  allow_missing_labels: false
+generation:
+  copies_per_image: 1
+  keep_originals: true
+  seed: 20261003
+splits:
+  train:
+    enabled: true
+    fraction: 1.0
+    preset: moderate
+    seed: null
+    overrides: {}
+  val:
+    enabled: false
+    fraction: 1.0
+    preset: mild
+    seed: null
+    overrides: {}
+  test:
+    enabled: false
+    fraction: 1.0
+    preset: mild
+    seed: null
+    overrides: {}
+# 全局 transforms/labels 省略以保留各划分自己的预设。
+# 如只改变 train：splits.train.overrides.transforms.affine.degrees: [-15, 15]
+# 所有配置项与完整默认值见同目录上级 README.md，或运行 --print-config。
+encoding:
+  format: png
+  jpeg_quality: 95
+  png_compression: 3
+runtime:
+  workers: 4
+  opencv_threads: 1
+  max_in_flight: null  # 自动 2 * workers
+  progress_every: 100
+logging:
+  level: INFO
+  max_bytes: 10485760
+  backup_count: 3
+preview:
+  count_per_split: 8
+  overlay_labels: true
+  tile_width: 640

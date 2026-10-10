@@ -5,6 +5,7 @@
 - [`src/nn`](src/nn/README.md)：YOLO 与 LiteHRNet 的训练、推理和导出。
 - [`src/blender`](src/blender/README.md)：Blender 渲染、数据合成和标注可视化。
 - [`src/perception`](src/perception/README.md)：可供其他模块调用的 OpenVINO 识别与外壳/装配柱独立位姿解算。
+- [`src/dataset_augment`](src/dataset_augment/README.md)：独立 YOLO 检测/关键点数据集离线增强，支持 YAML 和命令行配置。
 
 ## Python 环境
 
