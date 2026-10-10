@@ -47,12 +47,12 @@ CUDA Toolkit。由于 PyPI 发布的 `xtcocotools` wheel 仍使用 NumPy 1.x ABI
 环境中从源码重编译该扩展。安装结束后会加载两份配置并构建模型和数据增强组件，以检查环境完整性。
 
 因此，首次创建环境或删除根目录 `.venv` 后应运行 `bash setup_env.sh`，不能只运行一次普通的
-`uv sync`。环境建立完成后，从仓库根目录使用 `uv run --no-sync rm26-nn`，锁文件未变化时无需重复编译上述扩展。
+`uv sync`。环境建立完成后，从仓库根目录使用 `uv run --no-sync rm-nn`，锁文件未变化时无需重复编译上述扩展。
 
 检查安装：
 
 ```bash
-uv run --no-sync rm26-nn check
+uv run --no-sync rm-nn check
 ```
 
 ## Data Conversion
@@ -68,12 +68,12 @@ dataset_root/
 转换脚本将标签整理为 MMPose 使用的 COCO keypoint JSON，并保留关键点原始可见性和 in-frame 标记：
 
 ```bash
-uv run --no-sync rm26-nn hrnet convert DATASET_ROOT \
+uv run --no-sync rm-nn hrnet convert DATASET_ROOT \
   --output ANNOTATION_DIR
 ```
 
 `hrnet visualize` 可用于抽查转换后的 COCO 标注或原始 YOLO pose 标签，具体参数见
-`uv run --no-sync rm26-nn hrnet visualize --help`。
+`uv run --no-sync rm-nn hrnet visualize --help`。
 
 ## Training
 
@@ -83,9 +83,9 @@ uv run --no-sync rm26-nn hrnet convert DATASET_ROOT \
 export HRNET_DATA_ROOT=/absolute/path/to/dataset
 export HRNET_ANN_ROOT=/absolute/path/to/annotations
 
-uv run --no-sync rm26-nn hrnet train \
+uv run --no-sync rm-nn hrnet train \
   src/nn/hrnet/configs/td-hm_litehrnet18_exchange12_v11.0.py
-uv run --no-sync rm26-nn hrnet train \
+uv run --no-sync rm-nn hrnet train \
   src/nn/hrnet/configs/td-hm_litehrnet30_exchange12_v11.0.py
 ```
 
@@ -95,7 +95,7 @@ uv run --no-sync rm26-nn hrnet train \
 训练前可检查随机增强后的样本：
 
 ```bash
-uv run --no-sync rm26-nn hrnet preview \
+uv run --no-sync rm-nn hrnet preview \
   src/nn/hrnet/configs/td-hm_litehrnet18_exchange12_v11.0.py \
   --output-dir /tmp/hrnet-augmentation-preview
 ```
@@ -107,7 +107,7 @@ uv run --no-sync rm26-nn hrnet preview \
 图片推理：
 
 ```bash
-uv run --no-sync rm26-nn hrnet infer \
+uv run --no-sync rm-nn hrnet infer \
   --yolo-weights /absolute/path/to/yolo_detect.pt \
   --hrnet-config src/nn/hrnet/configs/td-hm_litehrnet18_exchange12_v11.0.py \
   --hrnet-checkpoint /absolute/path/to/litehrnet.pth \
@@ -118,7 +118,7 @@ uv run --no-sync rm26-nn hrnet infer \
 视频推理：
 
 ```bash
-uv run --no-sync rm26-nn hrnet infer \
+uv run --no-sync rm-nn hrnet infer \
   --yolo-weights /absolute/path/to/yolo_detect.pt \
   --hrnet-config src/nn/hrnet/configs/td-hm_litehrnet18_exchange12_v11.0.py \
   --hrnet-checkpoint /absolute/path/to/litehrnet.pth \
@@ -135,7 +135,7 @@ uv run --no-sync rm26-nn hrnet infer \
 导出工具先生成 ONNX，再转换为 OpenVINO IR：
 
 ```bash
-uv run --no-sync rm26-nn hrnet export \
+uv run --no-sync rm-nn hrnet export \
   --config src/nn/hrnet/configs/td-hm_litehrnet30_exchange12_v11.0.py \
   --checkpoint checkpoints/litehrnet30_best.pth \
   --output-dir exports/litehrnet30

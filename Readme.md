@@ -1,6 +1,6 @@
 # tech_core_estimate_demo
 
-基于 YOLO、LiteHRNet 和 Blender 的 RM2026 交换目标位姿识别与合成数据实验仓库。
+基于 YOLO、LiteHRNet 和 Blender 的 Robomaster 交换目标位姿识别与合成数据实验仓库。
 
 - [`src/nn`](src/nn/README.md)：YOLO 与 LiteHRNet 的训练、推理和导出。
 - [`src/blender`](src/blender/README.md)：Blender 渲染、数据合成和标注可视化。
@@ -13,8 +13,8 @@
 
 ```bash
 bash setup_env.sh
-uv run --no-sync rm26-nn check
-uv run --no-sync rm26-nn --help
+uv run --no-sync rm-nn check
+uv run --no-sync rm-nn --help
 ```
 
 `setup_env.sh` 按根目录 `uv.lock` 分阶段安装依赖，编译 MMCV CPU 算子并针对 NumPy 2.x
@@ -22,7 +22,7 @@ uv run --no-sync rm26-nn --help
 使用 `uv run --no-sync`，避免触发 uv 自动同步并替换本地编译的扩展。例如：
 
 ```bash
-uv run --no-sync rm26-nn yolo train --config src/nn/yolo/configs/train_pose.yaml
+uv run --no-sync rm-nn yolo train --config src/nn/yolo/configs/train_pose.yaml
 uv run --no-sync python src/blender/pipeline/compose_dataset.py --help
 uv run --no-sync python src/blender/pipeline/visualize_keypoints.py --help
 ```

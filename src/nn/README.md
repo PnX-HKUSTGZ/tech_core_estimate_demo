@@ -40,24 +40,24 @@ bash setup_env.sh
 环境自检：
 
 ```bash
-uv run --no-sync rm26-nn check
+uv run --no-sync rm-nn check
 ```
 
 训练、推理和数据工具统一从仓库根目录使用以下形式：
 
 ```bash
-uv run --no-sync rm26-nn <command> [arguments]
+uv run --no-sync rm-nn <command> [arguments]
 ```
 
-`rm26-nn` 会自动将仓库的 `src` 目录加入当前进程的模块搜索路径，并通过 `PYTHONPATH` 传递给训练子进程，
+`rm-nn` 会自动将仓库的 `src` 目录加入当前进程的模块搜索路径，并通过 `PYTHONPATH` 传递给训练子进程，
 因此无需在每条命令前手动设置该环境变量。
 
-使用 `uv run --no-sync rm26-nn --help` 查看全部子命令。例如，检查环境和启动 YOLO 姿态训练：
+使用 `uv run --no-sync rm-nn --help` 查看全部子命令。例如，检查环境和启动 YOLO 姿态训练：
 
 ```bash
-uv run --no-sync rm26-nn check
+uv run --no-sync rm-nn check
 
-uv run --no-sync rm26-nn yolo train \
+uv run --no-sync rm-nn yolo train \
   --config src/nn/yolo/configs/train_pose.yaml
 ```
 

@@ -41,4 +41,4 @@ uv pip install --python "${PROJECT_ROOT}/.venv/bin/python" \
   --no-build-isolation \
   "xtcocotools==1.14.3"
 
-CUDA_VISIBLE_DEVICES="" uv run --no-sync rm26-nn check
+CUDA_VISIBLE_DEVICES="" uv run --no-sync rm-nn check

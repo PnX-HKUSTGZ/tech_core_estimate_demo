@@ -45,7 +45,7 @@ dataset_root/
 姿态数据集包含 `pillar`、`exchange` 两类和 12 个关键点。检测训练只使用同一数据集中的目标框标注；如需要单独的检测数据集，可以执行：
 
 ```bash
-uv run --no-sync rm26-nn yolo pose2detect \
+uv run --no-sync rm-nn yolo pose2detect \
   --source /absolute/path/to/exchange_pose \
   --output /absolute/path/to/exchange_detect
 ```
@@ -56,19 +56,19 @@ YOLO、LiteHRNet 和普通 Python 数据工具共用仓库根目录的 uv 环境
 以下命令均从仓库根目录执行，并使用 `uv run --no-sync` 避免重新安装本地编译的依赖：
 
 ```bash
-uv run --no-sync rm26-nn yolo train \
+uv run --no-sync rm-nn yolo train \
   --config src/nn/yolo/configs/train_pose.yaml
 ```
 
 ```bash
-uv run --no-sync rm26-nn yolo train \
+uv run --no-sync rm-nn yolo train \
   --config src/nn/yolo/configs/train_detect.yaml
 ```
 
 数据、模型和训练参数可以通过命令行覆盖：
 
 ```bash
-uv run --no-sync rm26-nn yolo train \
+uv run --no-sync rm-nn yolo train \
   --config src/nn/yolo/configs/train_pose.yaml \
   --data /absolute/path/to/dataset.yaml \
   --model /absolute/path/to/yolo26s-pose.pt \
@@ -81,7 +81,7 @@ uv run --no-sync rm26-nn yolo train \
 ## OpenVINO 导出
 
 ```bash
-uv run --no-sync rm26-nn yolo export \
+uv run --no-sync rm-nn yolo export \
   --weights /absolute/path/to/best.pt \
   --imgsz 640
 ```

@@ -46,7 +46,7 @@ def _configure_python_path() -> None:
 
 
 def _print_help(group: str | None = None) -> None:
-    program = "rm26-nn" if Path(sys.argv[0]).name == "rm26-nn" else "python -m nn"
+    program = "rm-nn" if Path(sys.argv[0]).name == "rm-nn" else "python -m nn"
     print(f"Usage: {program} <command> [arguments]\n")
     print("Commands:")
     for command, (_, description) in _COMMANDS.items():

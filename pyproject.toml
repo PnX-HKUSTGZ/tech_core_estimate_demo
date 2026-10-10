@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tech-core-estimate-demo"
 version = "0.1.0"
-description = "RM2026 exchange perception, dataset composition, and keypoint tools"
+description = "Robomaster exchange perception, dataset composition, and keypoint tools"
 requires-python = ">=3.10,<3.11"
 dependencies = [
     "albumentations==2.0.8",
@@ -34,7 +34,7 @@ dependencies = [
 ]
 
 [project.scripts]
-rm26-nn = "nn.__main__:main"
+rm-nn = "nn.__main__:main"
 
 [[tool.uv.index]]
 name = "tsinghua"
